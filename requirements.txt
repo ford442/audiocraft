@@ -27,3 +27,4 @@ torchtext==0.16.0
 pesq
 pystoi
 torchdiffeq
+gradio==3.50.2
