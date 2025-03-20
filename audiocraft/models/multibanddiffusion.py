@@ -68,7 +68,7 @@ class MultiBandDiffusion:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
         path = 'facebook/multiband-diffusion'
         filename = 'mbd_musicgen_32khz.th'
-        name = 'facebook/musicgen-small'
+        name = 'facebook/musicgen-large'
         codec_model = load_compression_model(name, device=device)
         models, processors, cfgs = load_diffusion_models(path, filename=filename, device=device)
         DPs = []
