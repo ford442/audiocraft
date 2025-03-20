@@ -114,7 +114,7 @@ def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=N
     print("new batch", len(texts), texts, [None if m is None else (m[0], m[1].shape) for m in melodies])
     be = time.time()
     processed_melodies = []
-    target_sr = 32000
+    target_sr = 44100
     target_ac = 1
     for melody in melodies:
         if melody is None:
@@ -276,7 +276,7 @@ def ui_full(launch_kwargs):
                     decoder = gr.Radio(["Default", "MultiBand_Diffusion"],
                                        label="Decoder", value="Default", interactive=True)
                 with gr.Row():
-                    duration = gr.Slider(minimum=1, maximum=120, value=10, label="Duration", interactive=True)
+                    duration = gr.Slider(minimum=1, maximum=420, value=10, label="Duration", interactive=True)
                 with gr.Row():
                     topk = gr.Number(label="Top-k", value=250, interactive=True)
                     topp = gr.Number(label="Top-p", value=0, interactive=True)
