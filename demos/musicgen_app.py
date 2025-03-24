@@ -1,12 +1,3 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-
-# Updated to account for UI changes from https://github.com/rkfg/audiocraft/blob/long/app.py
-# also released under the MIT license.
-
 import argparse
 from concurrent.futures import ProcessPoolExecutor
 import logging
@@ -22,12 +13,12 @@ import warnings
 from einops import rearrange
 import torch
 import gradio as gr
+import librosa  # Import librosa
 
 from audiocraft.data.audio_utils import convert_audio
 from audiocraft.data.audio import audio_write
 from audiocraft.models.encodec import InterleaveStereoCompressionModel
 from audiocraft.models import MusicGen, MultiBandDiffusion
-
 
 MODEL = None  # Last used model
 SPACE_ID = os.environ.get('SPACE_ID', '')
@@ -48,8 +39,9 @@ def _call_nostderr(*args, **kwargs):
     _old_call(*args, **kwargs)
 
 
-sp.call = _call_nostderr
-# Preallocating the pool of processes.
+sp.call = _call_nostderr  # Still a good idea to keep this
+# Preallocating the pool of processes.  Not used for waveform generation anymore,
+# but could be used for other parallel tasks if needed.
 pool = ProcessPoolExecutor(4)
 pool.__enter__()
 
@@ -77,26 +69,17 @@ class FileCleaner:
                 self.files.pop(0)
             else:
                 break
-                
 file_cleaner = FileCleaner()
 
-
-def make_waveform(*args, **kwargs):
-    # Further remove some warnings.
-    be = time.time()
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
-        out = gr.make_waveform(*args, **kwargs)
-        print("Make a video took", time.time() - be)
-        return out
-
+# No more make_waveform function!
 
 def load_model(version='facebook/musicgen-melody'):
     global MODEL
     print("Loading model", version)
     if MODEL is None or MODEL.name != version:
         # Clear PyTorch CUDA cache and delete model
-        del MODEL
+        if MODEL is not None: #Prevent error on first load
+           del MODEL
         torch.cuda.empty_cache()
         MODEL = None  # in case loading would crash
         MODEL = MusicGen.get_pretrained(version)
@@ -114,13 +97,13 @@ def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=N
     print("new batch", len(texts), texts, [None if m is None else (m[0], m[1].shape) for m in melodies])
     be = time.time()
     processed_melodies = []
-    target_sr = 44100
-    target_ac = 1
+    target_sr = MODEL.sample_rate  # Get sample rate from the model
+    target_ac = MODEL.audio_channels  # Get audio channels from the model
     for melody in melodies:
         if melody is None:
             processed_melodies.append(None)
         else:
-            sr, melody = melody[0], torch.from_numpy(melody[1]).to(MODEL.device).float().t()
+            sr, melody = melody[0], torch.from_numpy(melody[1]).to(MODEL.device).float()
             if melody.dim() == 1:
                 melody = melody[None]
             melody = melody[..., :int(sr * duration)]
@@ -140,6 +123,7 @@ def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=N
             outputs = MODEL.generate(texts, progress=progress, return_tokens=USE_DIFFUSION)
     except RuntimeError as e:
         raise gr.Error("Error while generating " + e.args[0])
+
     if USE_DIFFUSION:
         if gradio_progress is not None:
             gradio_progress(1, desc='Running MultiBandDiffusion...')
@@ -152,31 +136,33 @@ def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=N
             assert outputs_diffusion.shape[1] == 1  # output is mono
             outputs_diffusion = rearrange(outputs_diffusion, '(s b) c t -> b (s c) t', s=2)
         outputs = torch.cat([outputs[0], outputs_diffusion], dim=0)
+    else:
+        outputs = outputs[0] #Correctly handle case where no diffusion
     outputs = outputs.detach().cpu().float()
-    pending_videos = []
-    out_wavs = []
+
+    out_files = []
     for output in outputs:
         with NamedTemporaryFile("wb", suffix=".wav", delete=False) as file:
             audio_write(
                 file.name, output, MODEL.sample_rate, strategy="loudness",
                 loudness_headroom_db=16, loudness_compressor=True, add_suffix=False)
-            pending_videos.append(pool.submit(make_waveform, file.name))
-            out_wavs.append(file.name)
-            file_cleaner.add(file.name)
-    out_videos = [pending_video.result() for pending_video in pending_videos]
-    for video in out_videos:
-        file_cleaner.add(video)
+            out_files.append(file.name)
+            file_cleaner.add(file.name)  # Clean up later
     print("batch finished", len(texts), time.time() - be)
     print("Tempfiles currently stored: ", len(file_cleaner.files))
-    return out_videos, out_wavs
+
+    if USE_DIFFUSION:
+        return out_files[0], out_files[1]  # Return both files
+    else:
+        return out_files[0], None # Return only the first (non-diffusion) file, and None
 
 
 def predict_batched(texts, melodies):
     max_text_length = 512
     texts = [text[:max_text_length] for text in texts]
     load_model('facebook/musicgen-stereo-melody')
-    res = _do_predictions(texts, melodies, BATCHED_DURATION)
-    return res
+    # No change needed here, already returns (audio, None) or (audio, audio)
+    return _do_predictions(texts, melodies, BATCHED_DURATION)
 
 
 def predict_full(model, model_path, decoder, text, melody, duration, topk, topp, temperature, cfg_coef, progress=gr.Progress()):
@@ -215,16 +201,20 @@ def predict_full(model, model_path, decoder, text, melody, duration, topk, topp,
         max_generated = max(generated, max_generated)
         progress((min(max_generated, to_generate), to_generate))
         if INTERRUPTING:
-            raise gr.Error("Interrupted.")
+            raise gr.Error("Interrupted.")  # Correct interruption handling
     MODEL.set_custom_progress_callback(_progress)
 
-    videos, wavs = _do_predictions(
+    # Call _do_predictions and unpack the results correctly
+    audio_file, diffusion_file = _do_predictions(
         [text], [melody], duration, progress=True,
         top_k=topk, top_p=topp, temperature=temperature, cfg_coef=cfg_coef,
         gradio_progress=progress)
-    if USE_DIFFUSION:
-        return videos[0], wavs[0], videos[1], wavs[1]
-    return videos[0], wavs[0], None, None
+
+    # Return gr.Audio components directly, handling None for diffusion_file
+    return gr.Audio(value=audio_file, label="Generated Music (wav)"), audio_file, \
+           gr.Audio(value=diffusion_file, label="MultiBand Diffusion Decoder (wav)") if diffusion_file else None, \
+           diffusion_file if diffusion_file else None
+
 
 
 def toggle_audio_src(choice):
@@ -257,9 +247,9 @@ def ui_full(launch_kwargs):
                     text = gr.Text(label="Input Text", interactive=True)
                     with gr.Column():
                         radio = gr.Radio(["file", "mic"], value="file",
-                                         label="Condition on a melody (optional) File or Mic")
+                                           label="Condition on a melody (optional) File or Mic")
                         melody = gr.Audio(sources=["upload"], type="numpy", label="File",
-                                          interactive=True, elem_id="melody-input")
+                                           interactive=True, elem_id="melody-input")
                 with gr.Row():
                     submit = gr.Button("Submit")
                     # Adapted from https://github.com/rkfg/audiocraft/blob/long/app.py, MIT license.
@@ -283,14 +273,17 @@ def ui_full(launch_kwargs):
                     temperature = gr.Number(label="Temperature", value=1.0, interactive=True)
                     cfg_coef = gr.Number(label="Classifier Free Guidance", value=3.0, interactive=True)
             with gr.Column():
-                output = gr.Video(label="Generated Music")
-                audio_output = gr.Audio(label="Generated Music (wav)", type='filepath')
-                diffusion_output = gr.Video(label="MultiBand Diffusion Decoder")
-                audio_diffusion = gr.Audio(label="MultiBand Diffusion Decoder (wav)", type='filepath')
+                # Use gr.Audio for both, and let it handle waveform display
+                output = gr.Audio(label="Generated Music")
+                audio_output = gr.Audio(label="Generated Music (wav)", type='filepath', visible=False)  # Keep this for compatibility
+                diffusion_output = gr.Audio(label="MultiBand Diffusion Decoder")
+                audio_diffusion = gr.Audio(label="MultiBand Diffusion Decoder (wav)", type='filepath', visible=False) # Keep this for compatibility
+
+
         submit.click(toggle_diffusion, decoder, [diffusion_output, audio_diffusion], queue=False,
                      show_progress=False).then(predict_full, inputs=[model, model_path, decoder, text, melody, duration, topk, topp,
-                                                                     temperature, cfg_coef],
-                                               outputs=[output, audio_output, diffusion_output, audio_diffusion])
+                                                                      temperature, cfg_coef],
+                                                outputs=[output, audio_output, diffusion_output, audio_diffusion])
         radio.change(toggle_audio_src, radio, [melody], queue=False, show_progress=False)
 
         gr.Examples(
@@ -300,41 +293,41 @@ def ui_full(launch_kwargs):
                     "An 80s driving pop song with heavy drums and synth pads in the background",
                     "./assets/bach.mp3",
                     "facebook/musicgen-stereo-melody",
-                    "Default"
+                    "Default", 10, 250, 0, 1.0, 3.0 #Include all parameters
                 ],
                 [
                     "A cheerful country song with acoustic guitars",
                     "./assets/bolero_ravel.mp3",
                     "facebook/musicgen-stereo-melody",
-                    "Default"
+                    "Default", 10, 250, 0, 1.0, 3.0
                 ],
                 [
                     "90s rock song with electric guitar and heavy drums",
                     None,
                     "facebook/musicgen-stereo-medium",
-                    "Default"
+                    "Default", 10, 250, 0, 1.0, 3.0
                 ],
                 [
                     "a light and cheerly EDM track, with syncopated drums, aery pads, and strong emotions",
                     "./assets/bach.mp3",
                     "facebook/musicgen-stereo-melody",
-                    "Default"
+                    "Default", 10, 250, 0, 1.0, 3.0
                 ],
                 [
                     "lofi slow bpm electro chill with organic samples",
                     None,
                     "facebook/musicgen-stereo-medium",
-                    "Default"
+                    "Default", 10, 250, 0, 1.0, 3.0
                 ],
                 [
                     "Punk rock with loud drum and power guitar",
                     None,
                     "facebook/musicgen-stereo-medium",
-                    "MultiBand_Diffusion"
+                    "MultiBand_Diffusion", 10, 250, 0, 1.0, 3.0
                 ],
             ],
-            inputs=[text, melody, model, decoder],
-            outputs=[output]
+            inputs=[text, melody, model, decoder, duration, topk, topp, temperature, cfg_coef], # All inputs
+            outputs=[output] # Output goes to the main output audio
         )
         gr.Markdown(
             """
