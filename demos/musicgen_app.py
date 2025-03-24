@@ -97,7 +97,7 @@ def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=N
     print("new batch", len(texts), texts, [None if m is None else (m[0], m[1].shape) for m in melodies])
     be = time.time()
     processed_melodies = []
-    target_sr = MODEL.sample_rate  # Get sample rate from the model
+    target_sr = 44100  # Get sample rate from the model
     target_ac = MODEL.audio_channels  # Get audio channels from the model
     for melody in melodies:
         if melody is None:
