@@ -203,7 +203,7 @@ def predict_full(model, model_path, decoder, text, melody, duration, topk, topp,
         if INTERRUPTING:
             raise gr.Error("Interrupted.")  # Correct interruption handling
     MODEL.set_custom_progress_callback(_progress)
-
+    MODEL.set_generation_params(extend_stride=10)
     # Call _do_predictions and unpack the results correctly
     audio_file, diffusion_file = _do_predictions(
         [text], [melody], duration, progress=True,
