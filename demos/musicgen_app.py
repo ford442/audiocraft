@@ -217,6 +217,7 @@ def predict_full(model, model_path, decoder, text, melody, duration, topk, topp,
         if INTERRUPTING:
             raise gr.Error("Interrupted.")
     MODEL.set_custom_progress_callback(_progress)
+    MODEL.set_generation_params(extend_stride=10)
 
     videos, wavs = _do_predictions(
         [text], [melody], duration, progress=True,
