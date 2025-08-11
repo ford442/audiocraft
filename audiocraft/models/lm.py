@@ -585,3 +585,105 @@ class LMModel(StreamingModule):
         # ensure the returned codes are all valid
         assert (out_codes >= 0).all() and (out_codes <= self.card).all()
         return out_codes
+
+@torch.no_grad()
+    def generate_in_chunks(self,
+                           prompt: tp.Optional[torch.Tensor] = None,
+                           conditions: tp.List[ConditioningAttributes] = [],
+                           num_samples: tp.Optional[int] = None,
+                           max_gen_len: int = 256,
+                           chunk_len: int = 1024,
+                           overlap_len: int = 128,
+                           **kwargs
+                           ) -> torch.Tensor:
+        """
+        Generates tokens in chunks to manage memory usage for long sequences.
+        This is a wrapper around the `generate` method that avoids pre-allocating
+        a tensor for the full `max_gen_len`, preventing CUDA out-of-memory errors.
+
+        Args:
+            prompt (torch.Tensor, optional): Prompt tokens of shape [B, K, T].
+            conditions (list of ConditioningAttributes, optional): List of conditions.
+            num_samples (int, optional): Number of samples to generate.
+            max_gen_len (int): The total maximum generation length in tokens.
+            chunk_len (int): The length of each chunk to generate. A smaller value
+                             reduces memory usage but may increase total generation time.
+            overlap_len (int): The number of tokens from the end of the previous chunk
+                               to use as a prompt for the next, ensuring coherence.
+                               This should be smaller than `chunk_len`.
+            **kwargs: Additional arguments to pass to the underlying `generate` method
+                      (e.g., temp, top_k, top_p, cfg_coef).
+        Returns:
+            torch.Tensor: The final generated tokens of shape [B, K, max_gen_len].
+        """
+        assert not self.training, "generation shouldn't be used in training mode."
+        assert overlap_len < chunk_len, "Overlap length must be smaller than chunk length."
+
+        first_param = next(iter(self.parameters()))
+        device = first_param.device
+        
+        if prompt is None:
+            assert num_samples is not None and num_samples > 0
+            prompt = torch.zeros((num_samples, self.num_codebooks, 0), dtype=torch.long, device=device)
+
+        B, K, T = prompt.shape
+        
+        # List to hold all the generated code chunks
+        all_generated_codes = []
+        
+        if T > 0:
+            # If there's an initial prompt, add it to our list of chunks.
+            # We'll trim it to `max_gen_len` if it's too long.
+            prompt_len = min(T, max_gen_len)
+            all_generated_codes.append(prompt[..., :prompt_len])
+
+        total_generated_len = sum(c.shape[-1] for c in all_generated_codes)
+        current_prompt = prompt
+
+        with self.streaming(): # Enable streaming mode for the whole process
+            while total_generated_len < max_gen_len:
+                # Determine how much to generate in this iteration
+                remaining_len = max_gen_len - total_generated_len
+                len_to_generate = min(chunk_len, remaining_len)
+                
+                # The effective max_gen_len for the underlying call
+                # is the length of the current prompt plus what we need to generate now.
+                effective_max_gen_len = current_prompt.shape[-1] + len_to_generate
+
+                # Call the original generate function
+                # We must use remove_prompts=True to get only the newly generated part
+                generated_chunk = self.generate(
+                    prompt=current_prompt,
+                    conditions=conditions,
+                    num_samples=num_samples,
+                    max_gen_len=effective_max_gen_len,
+                    remove_prompts=True,
+                    **kwargs
+                )
+                
+                # Append the new chunk to our list
+                all_generated_codes.append(generated_chunk)
+                total_generated_len += generated_chunk.shape[-1]
+
+                print(f"Generated chunk of size {generated_chunk.shape[-1]}. Total generated: {total_generated_len}/{max_gen_len}")
+
+                # Prepare the prompt for the next iteration using the overlap
+                # We take the last `overlap_len` tokens of what we just generated
+                # If the full output is needed for context, you could use:
+                # current_prompt = torch.cat(all_generated_codes, dim=-1)
+                # But using a sliding window (overlap) is more memory efficient.
+                current_prompt = generated_chunk[..., -overlap_len:]
+                
+                # Important: clear conditions after the first loop
+                # as they are now baked into the model's streaming state (KV cache)
+                conditions = []
+
+        if not all_generated_codes:
+            # Handle case where nothing was generated
+            return torch.zeros((B, K, 0), dtype=torch.long, device=device)
+
+        # Concatenate all the chunks to get the final result
+        final_codes = torch.cat(all_generated_codes, dim=-1)
+        
+        # Trim to the exact max_gen_len in case we over-generated slightly
+        return final_codes[..., :max_gen_len]
