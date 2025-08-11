@@ -283,9 +283,10 @@ class MusicGen(BaseGenModel):
         if self.duration <= self.max_duration:
             # generate by sampling from LM, simple case.
             with self.autocast:
-                gen_tokens = self.lm.generate(
-                    prompt_tokens, attributes,
-                    callback=callback, max_gen_len=total_gen_len, **self.generation_params)
+                gen_tokens = self.lm.generate_in_chunks(
+                        prompt_tokens, attributes,
+                        callback=callback, max_gen_len=max_gen_len, chunk_len=1024,
+                        overlap_len=128, **self.generation_params)
 
         else:
             # now this gets a bit messier, we need to handle prompts,
@@ -323,9 +324,10 @@ class MusicGen(BaseGenModel):
                         [self.sample_rate] * ref_wav[0].size(0),
                         [None], [0.])
                 with self.autocast:
-                    gen_tokens = self.lm.generate(
+                    gen_tokens = self.lm.generate_in_chunks(
                         prompt_tokens, attributes,
-                        callback=callback, max_gen_len=max_gen_len, **self.generation_params)
+                        callback=callback, max_gen_len=max_gen_len, chunk_len=1024,
+                        overlap_len=128, **self.generation_params)
                 if prompt_tokens is None:
                     all_tokens.append(gen_tokens)
                 else:
