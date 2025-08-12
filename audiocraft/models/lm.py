@@ -587,87 +587,96 @@ class LMModel(StreamingModule):
         return out_codes
                      
     @torch.no_grad()
-    def generate_in_chunks(self,
-                           prompt: tp.Optional[torch.Tensor] = None,
-                           conditions: tp.List[ConditioningAttributes] = [],
-                           num_samples: tp.Optional[int] = None,
-                           chunk_len: int = 1024,
-                           overlap_len: int = 128,
-                           **kwargs
-                           ) -> torch.Tensor:
-        """
-        Generates tokens in chunks to manage memory usage for long sequences.
-        This is a wrapper around the `generate` method that avoids pre-allocating
-        a tensor for the full `max_gen_len`, preventing CUDA out-of-memory errors.
-        This version explicitly manages keyword arguments for robust operation.
-        """
-        assert not self.training, "generation shouldn't be used in training mode."
-        assert overlap_len < chunk_len, "Overlap length must be smaller than chunk length."
+    def generate_segment(self,
+                     segment: int,
+                     prompt_text: str,
+                     max_segment_len: int,
+                     seed: tp.Optional[int] = None,
+                     # Pass other generation params like temp, top_k, etc.
+                     **kwargs
+                     ) -> tp.Tuple[torch.Tensor, int]:
+    """
+    Generates audio segment by segment, saving state to the filesystem.
+    This mirrors the logic from the RealViz script for robust, persistent state.
 
-        # Get max_gen_len from kwargs, with a default value. This is safer.
-        max_gen_len = kwargs.pop('max_gen_len', 256)
+    Args:
+        segment (int): The segment number to generate (starts at 1).
+        prompt_text (str): The text description for the music.
+        max_segment_len (int): The number of tokens to generate in this segment.
+        seed (int, optional): The seed for generation. If None and segment is 1,
+                              a random seed is created.
+        **kwargs: Additional generation parameters (temp, top_k, cfg_coef).
 
-        # Define the set of valid arguments for the underlying `generate` method
-        # to avoid passing unexpected arguments like 'progress'.
-        valid_generate_args = {
-            'use_sampling', 'temp', 'top_k', 'top_p', 'cfg_coef', 'cfg_coef_beta',
-            'two_step_cfg', 'remove_prompts', 'check', 'callback'
-        }
-        # Filter kwargs to only include valid arguments for the next call.
-        filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_generate_args}
+    Returns:
+        A tuple containing:
+        - full_codes (torch.Tensor): The generated tokens for the ENTIRE song so far.
+        - seed (int): The seed used for the generation process.
+    """
+    # Ensure a consistent seed across all segments of a song
+    if segment == 1:
+        if seed is None:
+            seed = random.randint(0, np.iinfo(np.int32).max)
+        print(f"Starting new generation with Seed: {seed}")
+        
+        # --- This block runs only for the very first segment ---
+        conditions = [ConditioningAttributes(text={'description': prompt_text})]
+        # Start with an empty prompt tensor
+        prompt_codes = torch.zeros((1, self.num_codebooks, 0), dtype=torch.long, device=self.device)
+        self.clear_streaming_state() # Ensure model state is fresh
+    else:
+        # --- This block runs for all subsequent segments ---
+        state_file = f"musicgen_state_{segment-1}_{seed}.pt"
+        if not os.path.exists(state_file):
+            raise FileNotFoundError(f"State file not found! Cannot resume from segment {segment}. Please run segment {segment-1} first.")
+        
+        print(f"Resuming from state file: {state_file}")
+        state = torch.load(state_file, map_location=self.device)
+        
+        # Restore all necessary components from the saved state
+        seed = state['seed']
+        conditions = state['conditions']
+        # The prompt for the next segment is the full output from the previous one
+        prompt_codes = state['generated_tokens']
+        # CRITICAL: Restore the model's internal KV cache
+        self.set_streaming_state(state['model_state'])
 
-        first_param = next(iter(self.parameters()))
-        device = first_param.device
+    # --- This part runs for EVERY segment ---
+    # The 'generate' function here refers to the original, non-chunking one.
+    # We are using it to generate just one segment's worth of audio.
+    # `remove_prompts=True` is vital to avoid re-generating the input prompt.
+    newly_generated_codes = self.generate(
+        prompt=prompt_codes,
+        conditions=conditions,
+        max_gen_len=prompt_codes.shape[-1] + max_segment_len, # Generate N more tokens
+        remove_prompts=True,
+        **kwargs
+    )
+    
+    # Combine the previous audio with the new segment
+    full_codes = torch.cat([prompt_codes, newly_generated_codes], dim=-1)
 
-        if num_samples is None:
-            if prompt is not None:
-                num_samples = prompt.shape[0]
-            elif conditions:
-                num_samples = len(conditions)
-            else:
-                num_samples = 1
+    # --- Save the new state for the NEXT segment to use ---
+    print(f"Segment {segment} finished. Saving state...")
+    new_model_state = self.get_streaming_state()
+    
+    # Move tensors to CPU before saving for portability
+    new_model_state.to('cpu')
+    
+    new_state_to_save = {
+        'seed': seed,
+        'conditions': conditions,
+        'generated_tokens': full_codes.to('cpu'),
+        'model_state': new_model_state,
+    }
 
-        if prompt is None:
-            assert num_samples > 0
-            prompt = torch.zeros((num_samples, self.num_codebooks, 0), dtype=torch.long, device=device)
+    # Save the state dictionary to a file
+    new_state_file = f"musicgen_state_{segment}_{seed}.pt"
+    torch.save(new_state_to_save, new_state_file)
+    print(f"State for resuming at segment {segment + 1} saved to {new_state_file}")
 
-        B, K, T = prompt.shape
-        all_generated_codes = []
+    return full_codes, seed
 
-        if T > 0:
-            prompt_len = min(T, max_gen_len)
-            all_generated_codes.append(prompt[..., :prompt_len])
-
-        total_generated_len = sum(c.shape[-1] for c in all_generated_codes)
-        current_prompt = prompt
-
-        with self.streaming():
-            while total_generated_len < max_gen_len:
-                remaining_len = max_gen_len - total_generated_len
-                len_to_generate = min(chunk_len, remaining_len)
-
-                effective_max_gen_len = current_prompt.shape[-1] + len_to_generate
-
-                # Call the original generate function with the filtered kwargs
-                generated_chunk = self.generate(
-                    prompt=current_prompt,
-                    conditions=conditions,
-                    num_samples=num_samples,
-                    max_gen_len=effective_max_gen_len,
-                    remove_prompts=True,
-                    **filtered_kwargs
-                )
-
-                all_generated_codes.append(generated_chunk)
-                total_generated_len += generated_chunk.shape[-1]
-
-                print(f"Generated chunk of size {generated_chunk.shape[-1]}. Total generated: {total_generated_len}/{max_gen_len}")
-
-                current_prompt = generated_chunk[..., -overlap_len:]
-                # The incorrect line 'conditions = []' has been removed from here.
-
-        if not all_generated_codes:
-            return torch.zeros((B, K, 0), dtype=torch.long, device=device)
-
-        final_codes = torch.cat(all_generated_codes, dim=-1)
-        return final_codes[..., :max_gen_len]
+# You should also add the device property to your LMModel class if it's not there
+@property
+def device(self):
+    return next(self.parameters()).device
