@@ -182,7 +182,7 @@ def predict_batched(texts, melodies):
     return _do_predictions(texts, melodies, BATCHED_DURATION)
 
 
-def predict_full(model, model_path, decoder, text, melody, duration, topk, topp, temperature, cfg_coef, progress=gr.Progress()):
+def predict_full(model, model_path, decoder, text, melody, duration, topk, topp, temperature, cfg_coef, chunk_siz, overlap_siz, progress=gr.Progress()):
     global INTERRUPTING
     global USE_DIFFUSION
     INTERRUPTING = False
@@ -232,21 +232,17 @@ def predict_full(model, model_path, decoder, text, melody, duration, topk, topp,
            gr.Audio(value=diffusion_file, label="MultiBand Diffusion Decoder (wav)") if diffusion_file else None, \
            diffusion_file if diffusion_file else None
 
-
-
 def toggle_audio_src(choice):
     if choice == "mic":
         return gr.update(source="microphone", value=None, label="Microphone")
     else:
         return gr.update(source="upload", value=None, label="File")
 
-
 def toggle_diffusion(choice):
     if choice == "MultiBand_Diffusion":
         return [gr.update(visible=True)] * 2
     else:
         return [gr.update(visible=False)] * 2
-
 
 def ui_full(launch_kwargs):
     with gr.Blocks() as interface:
@@ -285,6 +281,10 @@ def ui_full(launch_kwargs):
                 with gr.Row():
                     duration = gr.Slider(minimum=1, maximum=420, value=10, label="Duration", interactive=True)
                 with gr.Row():
+                    chunk_size = gr.Slider(minimum=1.0, maximum=120.0, value=20.0,label="Duration", interactive=True)
+                with gr.Row():
+                    overlap_size = gr.Slider(minimum=1.0, maximum=120.0, value=3.5,label="Overlap", interactive=True)
+                with gr.Row():
                     topk = gr.Number(label="Top-k", value=250, interactive=True)
                     topp = gr.Number(label="Top-p", value=0, interactive=True)
                     temperature = gr.Number(label="Temperature", value=1.0, interactive=True)
@@ -299,7 +299,7 @@ def ui_full(launch_kwargs):
 
         submit.click(toggle_diffusion, decoder, [diffusion_output, audio_diffusion], queue=False,
                      show_progress=False).then(predict_full, inputs=[model, model_path, decoder, text, melody, duration, topk, topp,
-                                                                      temperature, cfg_coef],
+                                                                      temperature, cfg_coef,chunk_size,overlap_size],
                                                 outputs=[output, audio_output, diffusion_output, audio_diffusion])
         radio.change(toggle_audio_src, radio, [melody], queue=False, show_progress=False)
 
