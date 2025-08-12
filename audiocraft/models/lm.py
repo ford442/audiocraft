@@ -586,7 +586,7 @@ class LMModel(StreamingModule):
         assert (out_codes >= 0).all() and (out_codes <= self.card).all()
         return out_codes
 
-@torch.no_grad()
+    @torch.no_grad()
     def generate_in_chunks(self,
                            prompt: tp.Optional[torch.Tensor] = None,
                            conditions: tp.List[ConditioningAttributes] = [],
