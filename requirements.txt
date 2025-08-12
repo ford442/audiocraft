@@ -10,7 +10,7 @@ numpy<2.0.0
 sentencepiece
 safetensors==0.4.3
 spacy==3.7.6
-torch==2.0.1
+torch==2.1.0
 torchaudio==2.0.2
 huggingface_hub
 tqdm
