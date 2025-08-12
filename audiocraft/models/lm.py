@@ -585,7 +585,7 @@ class LMModel(StreamingModule):
         # ensure the returned codes are all valid
         assert (out_codes >= 0).all() and (out_codes <= self.card).all()
         return out_codes
-
+                     
     @torch.no_grad()
     def generate_in_chunks(self,
                            prompt: tp.Optional[torch.Tensor] = None,
@@ -621,37 +621,40 @@ class LMModel(StreamingModule):
 
         first_param = next(iter(self.parameters()))
         device = first_param.device
-        
+
+        # --- NEW LOGIC TO FIX THE BUG ---
+        # This logic correctly determines num_samples if it's not provided.
+        if num_samples is None:
+            if prompt is not None:
+                num_samples = prompt.shape[0]
+            elif conditions:
+                num_samples = len(conditions)
+            else:
+                num_samples = 1
+        # --- END OF NEW LOGIC ---
+
         if prompt is None:
             assert num_samples is not None and num_samples > 0
             prompt = torch.zeros((num_samples, self.num_codebooks, 0), dtype=torch.long, device=device)
 
         B, K, T = prompt.shape
         
-        # List to hold all the generated code chunks
         all_generated_codes = []
         
         if T > 0:
-            # If there's an initial prompt, add it to our list of chunks.
-            # We'll trim it to `max_gen_len` if it's too long.
             prompt_len = min(T, max_gen_len)
             all_generated_codes.append(prompt[..., :prompt_len])
 
         total_generated_len = sum(c.shape[-1] for c in all_generated_codes)
         current_prompt = prompt
 
-        with self.streaming(): # Enable streaming mode for the whole process
+        with self.streaming():
             while total_generated_len < max_gen_len:
-                # Determine how much to generate in this iteration
                 remaining_len = max_gen_len - total_generated_len
                 len_to_generate = min(chunk_len, remaining_len)
                 
-                # The effective max_gen_len for the underlying call
-                # is the length of the current prompt plus what we need to generate now.
                 effective_max_gen_len = current_prompt.shape[-1] + len_to_generate
 
-                # Call the original generate function
-                # We must use remove_prompts=True to get only the newly generated part
                 generated_chunk = self.generate(
                     prompt=current_prompt,
                     conditions=conditions,
@@ -661,29 +664,18 @@ class LMModel(StreamingModule):
                     **kwargs
                 )
                 
-                # Append the new chunk to our list
                 all_generated_codes.append(generated_chunk)
                 total_generated_len += generated_chunk.shape[-1]
 
                 print(f"Generated chunk of size {generated_chunk.shape[-1]}. Total generated: {total_generated_len}/{max_gen_len}")
 
-                # Prepare the prompt for the next iteration using the overlap
-                # We take the last `overlap_len` tokens of what we just generated
-                # If the full output is needed for context, you could use:
-                # current_prompt = torch.cat(all_generated_codes, dim=-1)
-                # But using a sliding window (overlap) is more memory efficient.
                 current_prompt = generated_chunk[..., -overlap_len:]
                 
-                # Important: clear conditions after the first loop
-                # as they are now baked into the model's streaming state (KV cache)
                 conditions = []
 
         if not all_generated_codes:
-            # Handle case where nothing was generated
             return torch.zeros((B, K, 0), dtype=torch.long, device=device)
 
-        # Concatenate all the chunks to get the final result
         final_codes = torch.cat(all_generated_codes, dim=-1)
         
-        # Trim to the exact max_gen_len in case we over-generated slightly
         return final_codes[..., :max_gen_len]
