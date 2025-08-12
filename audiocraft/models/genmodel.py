@@ -37,7 +37,7 @@ class BaseGenModel(ABC):
             otherwise, inferred from the training params.
     """
     def __init__(self, name: str, compression_model: CompressionModel, lm: LMModel,
-                 max_duration: tp.Optional[float] = None):
+                 max_duration: tp.Optional[float] = None,chunk_size: tp.Optional[float] = None,overlap_size: tp.Optional[float] = None):
         self.name = name
         self.compression_model = compression_model
         self.lm = lm
