@@ -418,87 +418,170 @@ class LMModel(StreamingModule):
         return next_token
 
     @torch.no_grad()
-    def generate_in_chunks(self,
-                           prompt: tp.Optional[torch.Tensor] = None,
-                           conditions: tp.List[ConditioningAttributes] = [],
-                           num_samples: tp.Optional[int] = None,
-                           chunk_len: int = 1024,
-                           overlap_len: int = 128,
-                           **kwargs
-                           ) -> torch.Tensor:
-        """
-        Generates tokens in chunks to manage memory usage for long sequences.
-        This is a wrapper around the `generate` method that avoids pre-allocating
-        a tensor for the full `max_gen_len`, preventing CUDA out-of-memory errors.
-        This version explicitly manages keyword arguments for robust operation.
+    def generate(self,
+                 prompt: tp.Optional[torch.Tensor] = None,
+                 conditions: tp.List[ConditioningAttributes] = [],
+                 num_samples: tp.Optional[int] = None,
+                 max_gen_len: int = 256,
+                 use_sampling: bool = True,
+                 temp: float = 1.0,
+                 top_k: int = 250,
+                 top_p: float = 0.0,
+                 cfg_coef: tp.Optional[float] = None,
+                 cfg_coef_beta: tp.Optional[float] = None,
+                 two_step_cfg: tp.Optional[bool] = None,
+                 remove_prompts: bool = False,
+                 check: bool = False,
+                 callback: tp.Optional[tp.Callable[[int, int], None]] = None,
+                 ) -> torch.Tensor:
+        """Generate tokens sampling from the model given a prompt or unconditionally. Generation can
+        be performed in a greedy fashion or using sampling with top K and top P strategies.
+
+        Args:
+            prompt (torch.Tensor, optional): Prompt tokens of shape [B, K, T].
+            conditions (list of ConditioningAttributes, optional): List of conditions.
+            num_samples (int, optional): Number of samples to generate when no prompt and no conditions are given.
+            max_gen_len (int): Maximum generation length.
+            use_sampling (bool): Whether to use a sampling strategy or not.
+            temp (float): Sampling temperature.
+            top_k (int): K for "top-k" sampling.
+            top_p (float): P for "top-p" sampling.
+            cfg_coef (float, optional): Classifier-free guidance coefficient.
+            cfg_coef_beta (float, optional): If None, simple classifier free guidance is used with cfg_coef.
+                If not None, we apply double classifier free guidance as introduced in MusicGen-Style
+                in paragraph 4.3 (https://arxiv.org/pdf/2407.12563). This beta coefficient is meant to
+                push the text condition more than the style condition in the case where both text and style
+                conditions are being used.
+            two_step_cfg (bool, optional): Whether to perform classifier-free guidance with two steps generation.
+            remove_prompts (bool): Whether to remove prompts from generation or not.
+            check (bool): Whether to apply further checks on generated sequence.
+            callback (Callback, optional): Callback function to report generation progress.
+        Returns:
+            torch.Tensor: Generated tokens.
         """
         assert not self.training, "generation shouldn't be used in training mode."
-        assert overlap_len < chunk_len, "Overlap length must be smaller than chunk length."
-
-        # Get max_gen_len from kwargs, with a default value. This is safer.
-        max_gen_len = kwargs.pop('max_gen_len', 256)
-
-        # Define the set of valid arguments for the underlying `generate` method
-        # to avoid passing unexpected arguments like 'progress'.
-        valid_generate_args = {
-            'use_sampling', 'temp', 'top_k', 'top_p', 'cfg_coef', 'cfg_coef_beta',
-            'two_step_cfg', 'remove_prompts', 'check', 'callback'
-        }
-        # Filter kwargs to only include valid arguments for the next call.
-        filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_generate_args}
-
         first_param = next(iter(self.parameters()))
         device = first_param.device
 
-        if num_samples is None:
-            if prompt is not None:
-                num_samples = prompt.shape[0]
-            elif conditions:
-                num_samples = len(conditions)
-            else:
-                num_samples = 1
+        # Checking all input shapes are consistent.
+        possible_num_samples = []
+        if num_samples is not None:
+            possible_num_samples.append(num_samples)
+        elif prompt is not None:
+            possible_num_samples.append(prompt.shape[0])
+        elif conditions:
+            possible_num_samples.append(len(conditions))
+        else:
+            possible_num_samples.append(1)
+        assert [x == possible_num_samples[0] for x in possible_num_samples], "Inconsistent inputs shapes"
+        num_samples = possible_num_samples[0]
+
+        # below we create set of conditions: one conditional and one unconditional
+        # to do that we merge the regular condition together with the null condition
+        # we then do 1 forward pass instead of 2.
+        # the reason for that is two-fold:
+        # 1. it is about x2 faster than doing 2 forward passes
+        # 2. avoid the streaming API treating the 2 passes as part of different time steps
+        # We also support doing two different passes, in particular to ensure that
+        # the padding structure is exactly the same between train and test.
+        # With a batch size of 1, this can be slower though.
+        cfg_conditions: CFGConditions
+        cfg_conditions = {}
+        if cfg_coef_beta is not None:
+            if conditions:
+                wav_conditions = _drop_description_condition(conditions)
+                null_conditions = ClassifierFreeGuidanceDropout(p=1.0)(conditions)
+                conditions = conditions + wav_conditions + null_conditions
+                tokenized = self.condition_provider.tokenize(conditions)
+                cfg_conditions = self.condition_provider(tokenized)
+        elif conditions:
+            two_step_cfg = self.two_step_cfg if two_step_cfg is None else two_step_cfg
+            if conditions:
+                null_conditions = ClassifierFreeGuidanceDropout(p=1.0)(conditions)
+                if two_step_cfg:
+                    cfg_conditions = (
+                        self.condition_provider(self.condition_provider.tokenize(conditions)),
+                        self.condition_provider(self.condition_provider.tokenize(null_conditions)),
+                    )
+                else:
+                    conditions = conditions + null_conditions
+                    tokenized = self.condition_provider.tokenize(conditions)
+                    cfg_conditions = self.condition_provider(tokenized)
+        else:
+            cfg_conditions = {}
 
         if prompt is None:
             assert num_samples > 0
             prompt = torch.zeros((num_samples, self.num_codebooks, 0), dtype=torch.long, device=device)
 
         B, K, T = prompt.shape
-        all_generated_codes = []
+        start_offset = T
+        assert start_offset < max_gen_len
 
-        if T > 0:
-            prompt_len = min(T, max_gen_len)
-            all_generated_codes.append(prompt[..., :prompt_len])
+        pattern = self.pattern_provider.get_pattern(max_gen_len)
+        # this token is used as default value for codes that are not generated yet
+        unknown_token = -1
 
-        total_generated_len = sum(c.shape[-1] for c in all_generated_codes)
-        current_prompt = prompt
+        # we generate codes up to the max_gen_len that will be mapped to the pattern sequence
+        gen_codes = torch.full((B, K, max_gen_len), unknown_token, dtype=torch.long, device=device)
+        # filling the gen_codes with the prompt if needed
+        gen_codes[..., :start_offset] = prompt
+        # create the gen_sequence with proper interleaving from the pattern: [B, K, S]
+        gen_sequence, indexes, mask = pattern.build_pattern_sequence(gen_codes, self.special_token_id)
+        # retrieve the start_offset in the sequence:
+        # it is the first sequence step that contains the `start_offset` timestep
+        start_offset_sequence = pattern.get_first_step_with_timesteps(start_offset)
+        assert start_offset_sequence is not None
 
         with self.streaming():
-            while total_generated_len < max_gen_len:
-                remaining_len = max_gen_len - total_generated_len
-                len_to_generate = min(chunk_len, remaining_len)
-
-                effective_max_gen_len = current_prompt.shape[-1] + len_to_generate
-
-                # Call the original generate function with the filtered kwargs
-                generated_chunk = self.generate(
-                    prompt=current_prompt,
-                    conditions=conditions,
-                    num_samples=num_samples,
-                    max_gen_len=effective_max_gen_len,
-                    remove_prompts=True,
-                    **filtered_kwargs
+            unconditional_state = self.get_streaming_state()
+            prev_offset = 0
+            gen_sequence_len = gen_sequence.shape[-1]  # gen_sequence shape is [B, K, S]
+            for offset in range(start_offset_sequence, gen_sequence_len):
+                # get current sequence (note that the streaming API is providing the caching over previous offsets)
+                curr_sequence = gen_sequence[..., prev_offset:offset]
+                curr_mask = mask[None, ..., prev_offset:offset].expand(B, -1, -1)
+                if check:
+                    # check coherence between mask and sequence
+                    assert (curr_sequence == torch.where(curr_mask, curr_sequence, self.special_token_id)).all()
+                    # should never happen as gen_sequence is filled progressively
+                    assert not (curr_sequence == unknown_token).any()
+                # sample next token from the model, next token shape is [B, K, 1]
+                next_token = self._sample_next_token(
+                    curr_sequence, cfg_conditions, unconditional_state, use_sampling, temp, top_k, top_p,
+                    cfg_coef=cfg_coef, cfg_coef_beta=cfg_coef_beta, two_step_cfg=two_step_cfg)
+                # ensure the tokens that should be masked are properly set to special_token_id
+                # as the model never output special_token_id
+                valid_mask = mask[..., offset:offset+1].expand(B, -1, -1)
+                next_token[~valid_mask] = self.special_token_id
+                # ensure we don't overwrite prompt tokens, we only write over unknown tokens
+                # (then mask tokens should be left as is as well, which is correct)
+                gen_sequence[..., offset:offset+1] = torch.where(
+                    gen_sequence[..., offset:offset+1] == unknown_token,
+                    next_token, gen_sequence[..., offset:offset+1]
                 )
+                prev_offset = offset
+                if callback is not None:
+                    callback(1 + offset - start_offset_sequence, gen_sequence_len - start_offset_sequence)
+        unconditional_state.clear()
 
-                all_generated_codes.append(generated_chunk)
-                total_generated_len += generated_chunk.shape[-1]
+        # ensure sequence has been entirely filled
+        assert not (gen_sequence == unknown_token).any()
+        # ensure gen_sequence pattern and mask are matching
+        # which means the gen_sequence is valid according to the pattern
+        assert (
+            gen_sequence == torch.where(mask[None, ...].expand(B, -1, -1), gen_sequence, self.special_token_id)
+        ).all()
+        # get back the codes, trimming the prompt if needed and cutting potentially incomplete timesteps
+        out_codes, out_indexes, out_mask = pattern.revert_pattern_sequence(gen_sequence, special_token=unknown_token)
 
-                print(f"Generated chunk of size {generated_chunk.shape[-1]}. Total generated: {total_generated_len}/{max_gen_len}")
+        # sanity checks over the returned codes and corresponding masks
+        assert (out_codes[..., :max_gen_len] != unknown_token).all()
+        assert (out_mask[..., :max_gen_len] == 1).all()
 
-                current_prompt = generated_chunk[..., -overlap_len:]
-                # The incorrect line 'conditions = []' has been removed from here.
+        out_start_offset = start_offset if remove_prompts else 0
+        out_codes = out_codes[..., out_start_offset:max_gen_len]
 
-        if not all_generated_codes:
-            return torch.zeros((B, K, 0), dtype=torch.long, device=device)
-
-        final_codes = torch.cat(all_generated_codes, dim=-1)
-        return final_codes[..., :max_gen_len]
+        # ensure the returned codes are all valid
+        assert (out_codes >= 0).all() and (out_codes <= self.card).all()
+        return out_codes
