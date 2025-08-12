@@ -172,6 +172,9 @@ class LMModel(StreamingModule):
         if norm_first:
             self.out_norm = create_norm_fn(norm, dim)
         self.linears = nn.ModuleList([nn.Linear(dim, self.card, bias=bias_proj) for _ in range(n_q)])
+        self.generation_params: dict = {}
+        self.chunk_size: tp.Optional[int] = None
+        self.overlap: tp.Optional[int] = None
         self._init_weights(weight_init, depthwise_init, zero_bias_init)
         self._fsdp: tp.Optional[nn.Module]
         self.__dict__['_fsdp'] = None
@@ -585,6 +588,13 @@ class LMModel(StreamingModule):
         # ensure the returned codes are all valid
         assert (out_codes >= 0).all() and (out_codes <= self.card).all()
         return out_codes
+
+    def set_generation_params(self, **kwargs):
+        """Set the generation parameters for the LM model."""
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+        self.generation_params.update(kwargs)
                      
     @torch.no_grad()
     def generate_in_chunks(self,

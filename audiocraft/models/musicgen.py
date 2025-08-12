@@ -97,7 +97,7 @@ class MusicGen(BaseGenModel):
                               top_p: float = 0.0, temperature: float = 1.0,
                               duration: float = 30.0, cfg_coef: float = 3.0,
                               cfg_coef_beta: tp.Optional[float] = None,
-                              two_step_cfg: bool = False, extend_stride: float = 18,):
+                              two_step_cfg: bool = False, extend_stride: float = 18, **kwargs):
         """Set the generation parameters for MusicGen.
 
         Args:
@@ -130,6 +130,8 @@ class MusicGen(BaseGenModel):
             'two_step_cfg': two_step_cfg,
             'cfg_coef_beta': cfg_coef_beta,
         }
+        self.generation_params.update(kwargs)
+        self.lm.set_generation_params(**self.generation_params)
 
     def set_style_conditioner_params(self, eval_q: int = 3, excerpt_length: float = 3.0,
                                      ds_factor: tp.Optional[int] = None,

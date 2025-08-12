@@ -182,7 +182,7 @@ def predict_batched(texts, melodies):
     return _do_predictions(texts, melodies, BATCHED_DURATION)
 
 
-def predict_full(model, model_path, decoder, text, melody, duration, topk, topp, temperature, cfg_coef, chunk_siz, overlap_siz, progress=gr.Progress()):
+def predict_full(model, model_path, decoder, text, melody, duration, topk, topp, temperature, cfg_coef, chunk_size, overlap_size, progress=gr.Progress()):
     global INTERRUPTING
     global USE_DIFFUSION
     INTERRUPTING = False
@@ -225,6 +225,7 @@ def predict_full(model, model_path, decoder, text, melody, duration, topk, topp,
     audio_file, diffusion_file = _do_predictions(
         [text], [melody], duration, progress=True,
         top_k=topk, top_p=topp, temperature=temperature, cfg_coef=cfg_coef,
+        chunk_size=chunk_size, overlap=overlap_size,
         gradio_progress=progress)
 
     # Return gr.Audio components directly, handling None for diffusion_file
@@ -281,7 +282,7 @@ def ui_full(launch_kwargs):
                 with gr.Row():
                     duration = gr.Slider(minimum=1, maximum=420, value=10, label="Duration", interactive=True)
                 with gr.Row():
-                    chunk_size = gr.Slider(minimum=1.0, maximum=120.0, value=20.0,label="Duration", interactive=True)
+                    chunk_size = gr.Slider(minimum=1.0, maximum=120.0, value=20.0,label="Chunk Size", interactive=True)
                 with gr.Row():
                     overlap_size = gr.Slider(minimum=1.0, maximum=120.0, value=3.5,label="Overlap", interactive=True)
                 with gr.Row():
