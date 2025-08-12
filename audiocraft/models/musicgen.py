@@ -285,7 +285,7 @@ class MusicGen(BaseGenModel):
             with self.autocast:
                 gen_tokens = self.lm.generate_in_chunks(
                         prompt_tokens, attributes,
-                        callback=callback, max_gen_len=max_gen_len, chunk_len=1024,
+                        callback=callback, max_gen_len=total_gen_len, chunk_len=1024,
                         overlap_len=128, **self.generation_params)
 
         else:
@@ -326,7 +326,7 @@ class MusicGen(BaseGenModel):
                 with self.autocast:
                     gen_tokens = self.lm.generate_in_chunks(
                         prompt_tokens, attributes,
-                        callback=callback, max_gen_len=max_gen_len, chunk_len=1024,
+                        callback=callback, max_gen_len=total_gen_len, chunk_len=1024,
                         overlap_len=128, **self.generation_params)
                 if prompt_tokens is None:
                     all_tokens.append(gen_tokens)
