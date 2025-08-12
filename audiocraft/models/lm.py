@@ -591,7 +591,6 @@ class LMModel(StreamingModule):
                            prompt: tp.Optional[torch.Tensor] = None,
                            conditions: tp.List[ConditioningAttributes] = [],
                            num_samples: tp.Optional[int] = None,
-                           max_gen_len: int = 256,
                            chunk_len: int = 1024,
                            overlap_len: int = 128,
                            **kwargs
@@ -600,30 +599,26 @@ class LMModel(StreamingModule):
         Generates tokens in chunks to manage memory usage for long sequences.
         This is a wrapper around the `generate` method that avoids pre-allocating
         a tensor for the full `max_gen_len`, preventing CUDA out-of-memory errors.
-
-        Args:
-            prompt (torch.Tensor, optional): Prompt tokens of shape [B, K, T].
-            conditions (list of ConditioningAttributes, optional): List of conditions.
-            num_samples (int, optional): Number of samples to generate.
-            max_gen_len (int): The total maximum generation length in tokens.
-            chunk_len (int): The length of each chunk to generate. A smaller value
-                             reduces memory usage but may increase total generation time.
-            overlap_len (int): The number of tokens from the end of the previous chunk
-                               to use as a prompt for the next, ensuring coherence.
-                               This should be smaller than `chunk_len`.
-            **kwargs: Additional arguments to pass to the underlying `generate` method
-                      (e.g., temp, top_k, top_p, cfg_coef).
-        Returns:
-            torch.Tensor: The final generated tokens of shape [B, K, max_gen_len].
+        This version explicitly manages keyword arguments for robust operation.
         """
         assert not self.training, "generation shouldn't be used in training mode."
         assert overlap_len < chunk_len, "Overlap length must be smaller than chunk length."
 
+        # Get max_gen_len from kwargs, with a default value. This is safer.
+        max_gen_len = kwargs.pop('max_gen_len', 256)
+
+        # Define the set of valid arguments for the underlying `generate` method
+        # to avoid passing unexpected arguments like 'progress'.
+        valid_generate_args = {
+            'use_sampling', 'temp', 'top_k', 'top_p', 'cfg_coef', 'cfg_coef_beta',
+            'two_step_cfg', 'remove_prompts', 'check', 'callback'
+        }
+        # Filter kwargs to only include valid arguments for the next call.
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_generate_args}
+
         first_param = next(iter(self.parameters()))
         device = first_param.device
 
-        # --- NEW LOGIC TO FIX THE BUG ---
-        # This logic correctly determines num_samples if it's not provided.
         if num_samples is None:
             if prompt is not None:
                 num_samples = prompt.shape[0]
@@ -631,16 +626,14 @@ class LMModel(StreamingModule):
                 num_samples = len(conditions)
             else:
                 num_samples = 1
-        # --- END OF NEW LOGIC ---
 
         if prompt is None:
-            assert num_samples is not None and num_samples > 0
+            assert num_samples > 0
             prompt = torch.zeros((num_samples, self.num_codebooks, 0), dtype=torch.long, device=device)
 
         B, K, T = prompt.shape
-        
         all_generated_codes = []
-        
+
         if T > 0:
             prompt_len = min(T, max_gen_len)
             all_generated_codes.append(prompt[..., :prompt_len])
@@ -652,30 +645,29 @@ class LMModel(StreamingModule):
             while total_generated_len < max_gen_len:
                 remaining_len = max_gen_len - total_generated_len
                 len_to_generate = min(chunk_len, remaining_len)
-                
+
                 effective_max_gen_len = current_prompt.shape[-1] + len_to_generate
 
+                # Call the original generate function with the filtered kwargs
                 generated_chunk = self.generate(
                     prompt=current_prompt,
                     conditions=conditions,
                     num_samples=num_samples,
                     max_gen_len=effective_max_gen_len,
                     remove_prompts=True,
-                    **kwargs
+                    **filtered_kwargs
                 )
-                
+
                 all_generated_codes.append(generated_chunk)
                 total_generated_len += generated_chunk.shape[-1]
 
                 print(f"Generated chunk of size {generated_chunk.shape[-1]}. Total generated: {total_generated_len}/{max_gen_len}")
 
                 current_prompt = generated_chunk[..., -overlap_len:]
-                
-                conditions = []
+                # The incorrect line 'conditions = []' has been removed from here.
 
         if not all_generated_codes:
             return torch.zeros((B, K, 0), dtype=torch.long, device=device)
 
         final_codes = torch.cat(all_generated_codes, dim=-1)
-        
         return final_codes[..., :max_gen_len]
