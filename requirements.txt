@@ -16,7 +16,7 @@ torchaudio>=2.0.0,<2.1.2
 huggingface_hub
 tqdm
 transformers>=4.38.0  # need Encodec there.
-tokenizers==0.16.0
+tokenizers==0.15.2
 xformers<0.0.23
 demucs
 librosa
