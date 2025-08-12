@@ -262,7 +262,7 @@ class MusicGen(BaseGenModel):
             torch.Tensor: Generated audio, of shape [B, C, T], T is defined by the generation params.
         """
         total_chunk_len=int(self.lm.chunk_size * self.frame_rate)
-        total_overlap_len=int(self.lm.overlap_size * self.frame_rate)
+        total_overlap_len=int(self.lm.overlap * self.frame_rate)
         total_gen_len = int(self.duration * self.frame_rate)
         max_prompt_len = int(min(self.duration, self.max_duration) * self.frame_rate)
         current_gen_offset: int = 0
