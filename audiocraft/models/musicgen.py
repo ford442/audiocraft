@@ -49,8 +49,8 @@ class MusicGen(BaseGenModel):
             otherwise, inferred from the training params.
     """
     def __init__(self, name: str, compression_model: CompressionModel, lm: LMModel,
-                 max_duration: tp.Optional[float] = None,chunk_size: tp.Optional[float] = None,overlap_size: tp.Optional[float] = None):
-        super().__init__(name, compression_model, lm, max_duration,chunk_size,overlap_size)
+                 max_duration: tp.Optional[float] = None):
+        super().__init__(name, compression_model, lm, max_duration)
         self.set_generation_params(duration=15)  # default duration
 
     @staticmethod
@@ -259,8 +259,6 @@ class MusicGen(BaseGenModel):
         Returns:
             torch.Tensor: Generated audio, of shape [B, C, T], T is defined by the generation params.
         """
-        total_chunk_len=int(chunk_size * self.frame_rate)
-        total_overlap_len=int(overlap_size * self.frame_rate)
         total_gen_len = int(self.duration * self.frame_rate)
         max_prompt_len = int(min(self.duration, self.max_duration) * self.frame_rate)
         current_gen_offset: int = 0
@@ -287,8 +285,8 @@ class MusicGen(BaseGenModel):
             with self.autocast:
                 gen_tokens = self.lm.generate_in_chunks(
                         prompt_tokens, attributes,
-                        callback=callback, max_gen_len=total_gen_len, chunk_len=total_chunk_len,
-                        overlap_len=total_overlap_len, **self.generation_params)
+                        callback=callback, max_gen_len=total_gen_len, chunk_len=1024,
+                        overlap_len=128, **self.generation_params)
 
         else:
             # now this gets a bit messier, we need to handle prompts,
@@ -328,9 +326,8 @@ class MusicGen(BaseGenModel):
                 with self.autocast:
                     gen_tokens = self.lm.generate_in_chunks(
                         prompt_tokens, attributes,
-                        callback=callback, max_gen_len=total_gen_len, chunk_len=total_chunk_len,
-                        overlap_len=total_overlap_len, **self.generation_params)
-
+                        callback=callback, max_gen_len=total_gen_len, chunk_len=1024,
+                        overlap_len=128, **self.generation_params)
                 if prompt_tokens is None:
                     all_tokens.append(gen_tokens)
                 else:
