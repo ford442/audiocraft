@@ -142,7 +142,7 @@ def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=N
 
     out_files = []
     for output in outputs:
-        with NamedTemporaryFile("wb", suffix=".wav", delete=False) as file:
+        with NamedTemporaryFile("wb", suffix=".flac", delete=False) as file:
             audio_write(
                 file.name, output, MODEL.sample_rate, strategy="loudness",
                 loudness_headroom_db=16, loudness_compressor=True, add_suffix=False)
