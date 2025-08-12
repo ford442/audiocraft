@@ -8,12 +8,14 @@ julius
 num2words
 numpy<2.0.0
 sentencepiece
+safetensors==0.4.3
 spacy==3.7.6
-torch==2.1.0
-torchaudio>=2.0.0,<2.1.2
+torch==2.0.1
+torchaudio==2.0.2
 huggingface_hub
 tqdm
-transformers>=4.31.0  # need Encodec there.
+transformers>=4.38.0  # need Encodec there.
+tokenizers==0.15.2
 xformers<0.0.23
 demucs
 librosa
@@ -22,7 +24,7 @@ gradio
 torchmetrics
 encodec
 protobuf
-torchvision==0.16.0
+torchvision==0.15.2
 torchtext==0.16.0
 pesq
 pystoi
