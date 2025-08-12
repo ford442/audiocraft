@@ -5,6 +5,7 @@ flashy>=0.0.1
 hydra-core>=1.1
 hydra_colorlog
 julius
+av
 num2words
 numpy<2.0.0
 sentencepiece
