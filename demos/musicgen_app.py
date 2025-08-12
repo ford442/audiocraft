@@ -2,6 +2,12 @@ import argparse
 from concurrent.futures import ProcessPoolExecutor
 import logging
 import os
+os.putenv('PYTORCH_NVML_BASED_CUDA_CHECK','1')
+os.putenv('TORCH_LINALG_PREFER_CUSOLVER','1')
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True,pinned_use_background_threads:True'
+os.environ["SAFETENSORS_FAST_GPU"] = "1"
+os.putenv('HF_HUB_ENABLE_HF_TRANSFER','1')
+
 from pathlib import Path
 import subprocess as sp
 import sys
@@ -12,6 +18,17 @@ import warnings
 
 from einops import rearrange
 import torch
+torch.backends.cuda.matmul.allow_tf32 = False
+torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
+torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
+torch.backends.cudnn.allow_tf32 = False
+torch.backends.cudnn.deterministic = False
+torch.backends.cudnn.benchmark = False
+torch.backends.cuda.preferred_blas_library="cublas"
+torch.backends.cuda.preferred_linalg_library="cusolver"
+torch.set_float32_matmul_precision("highest")
+
+
 import gradio as gr
 import librosa  # Import librosa
 
