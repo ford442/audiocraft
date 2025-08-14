@@ -108,6 +108,17 @@ def load_diffusion():
         print("loading MBD")
         MBD = MultiBandDiffusion.get_mbd_musicgen()
 
+def unload_model():
+    """Helper function to unload the current MusicGen model."""
+    global MODEL
+    if MODEL is not None:
+        print("Unloading MusicGen model...")
+        del MODEL
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        MODEL = None
+        print("MusicGen model unloaded.")
 
 def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=None, **gen_kwargs):
     MODEL.set_generation_params(duration=duration, **gen_kwargs)
@@ -148,6 +159,9 @@ def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=N
         if isinstance(MODEL.compression_model, InterleaveStereoCompressionModel):
             left, right = MODEL.compression_model.get_left_right_codes(tokens)
             tokens = torch.cat([left, right])
+            # Unload the MusicGen model *before* loading/using diffusion
+            # This is crucial to avoid OOM errors if both are large.
+            unload_model() # Call the helper function
         outputs_diffusion = MBD.tokens_to_wav(tokens)
         if isinstance(MODEL.compression_model, InterleaveStereoCompressionModel):
             assert outputs_diffusion.shape[1] == 1  # output is mono
