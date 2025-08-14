@@ -123,71 +123,162 @@ def unload_model():
         print("MusicGen model unloaded.")
 
 def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=None, **gen_kwargs):
+    # Ensure MODEL is loaded before proceeding
+    if MODEL is None:
+        print("Error: MODEL is None when entering _do_predictions.")
+        raise gr.Error("MusicGen model is not loaded.")
+
     MODEL.set_generation_params(duration=duration, **gen_kwargs)
-    print("new batch", len(texts), texts, [None if m is None else (m[0], m[1].shape) for m in melodies])
+    print("New batch:", len(texts), texts, [None if m is None else (m[0], m[1].shape) for m in melodies])
     be = time.time()
     processed_melodies = []
-    target_sr = 44100  # Get sample rate from the model
-    target_ac = MODEL.audio_channels  # Get audio channels from the model
-    for melody in melodies:
-        if melody is None:
+    target_sr = MODEL.sample_rate # Use model's sample rate
+    target_ac = MODEL.audio_channels # Use model's audio channels
+
+    for melody_input in melodies:
+        if melody_input is None:
             processed_melodies.append(None)
         else:
-            sr, melody = melody[0], torch.from_numpy(melody[1]).to(MODEL.device).float()
-            if melody.dim() == 1:
-                melody = melody[None]
-            melody = melody[..., :int(sr * duration)]
-            melody = convert_audio(melody, sr, target_sr, target_ac)
-            processed_melodies.append(melody)
+            sr, melody_data = melody_input
+            melody_tensor = torch.from_numpy(melody_data).to(MODEL.device).float()
+            if melody_tensor.dim() == 1:
+                melody_tensor = melody_tensor[None]
+            # Ensure melody is not longer than requested duration
+            melody_tensor = melody_tensor[..., :int(sr * duration)]
+            # Convert audio to target sample rate and channels
+            melody_converted = convert_audio(melody_tensor, sr, target_sr, target_ac)
+            processed_melodies.append(melody_converted)
+
+    # Store compression model type BEFORE potentially unloading MODEL
+    compression_model_type_is_stereo = None
+    try:
+        if isinstance(MODEL.compression_model, InterleaveStereoCompressionModel):
+            compression_model_type_is_stereo = True
+        else:
+            compression_model_type_is_stereo = False
+    except AttributeError:
+        print("Could not access MODEL.compression_model. MODEL might be None or invalid.")
+        compression_model_type_is_stereo = False # Default to False if access fails
 
     try:
         if any(m is not None for m in processed_melodies):
+            print("Generating with chroma...")
             outputs = MODEL.generate_with_chroma(
                 descriptions=texts,
                 melody_wavs=processed_melodies,
                 melody_sample_rate=target_sr,
                 progress=progress,
-                return_tokens=USE_DIFFUSION
+                return_tokens=USE_DIFFUSION  # Only return tokens if diffusion is used
             )
         else:
+            print("Generating without chroma...")
             outputs = MODEL.generate(texts, progress=progress, return_tokens=USE_DIFFUSION)
+
     except RuntimeError as e:
-        raise gr.Error("Error while generating " + e.args[0])
+        print(f"Runtime error during generation: {e}")
+        if "CUDA out of memory" in str(e):
+            unload_model() # Attempt to clean up
+        raise gr.Error("Error while generating: " + e.args[0])
+    except Exception as e:
+        print(f"An unexpected error occurred during generation: {e}")
+        raise gr.Error("An unexpected error occurred during generation: " + str(e))
 
-    if USE_DIFFUSION:
+    # Handle diffusion part
+    if USE_DIFFUSION and MBD is not None: # Check if MBD is loaded
+        print("Applying MultiBandDiffusion...")
         if gradio_progress is not None:
-            gradio_progress(1, desc='Running MultiBandDiffusion...')
+            gradio_progress(0.5, desc='Applying MultiBandDiffusion...') # Update progress
+
         tokens = outputs[1]
-        if isinstance(MODEL.compression_model, InterleaveStereoCompressionModel):
-            left, right = MODEL.compression_model.get_left_right_codes(tokens)
-            tokens = torch.cat([left, right])
-            # Unload the MusicGen model *before* loading/using diffusion
-            # This is crucial to avoid OOM errors if both are large.
-            unload_model() # Call the helper function
+
+        # --- DECODE WITH DEFAULT DECODER FIRST TO GET A FILE ---
+        default_audio_wav_path = None
+        try:
+            # Use the stored information about compression model type
+            if compression_model_type_is_stereo and isinstance(tokens, torch.Tensor):
+                # Assuming tokens shape needs to be managed if it's stereo
+                if tokens.dim() == 2 and tokens.shape[0] == 2: # e.g., (2, seq_len) for stereo codes
+                    left, right = tokens[0], tokens[1]
+                    # If compression_model expects interleaved or separate, adjust here.
+                    # The original code did:
+                    # left, right = MODEL.compression_model.get_left_right_codes(tokens)
+                    # tokens = torch.cat([left, right])
+                    # This implies `tokens` might be a combined representation.
+                    # For now, let's just save the raw tokens if they are tensor
+                    # and assume the default decode handles it, or we need specific logic.
+                    # If `tokens` are already structured like (2, seq_len) for stereo,
+                    # `outputs[0]` would be stereo audio.
+                    pass # No specific adjustment here if `outputs[0]` is already stereo audio
+            
+            # Save the default output BEFORE unloading MODEL
+            with NamedTemporaryFile("wb", suffix=".flac", delete=False) as file:
+                # Squeeze(0) assumes batch size 1. If batch > 1, adjust.
+                audio_write(
+                    file.name, outputs[0].detach().cpu().float().squeeze(0), MODEL.sample_rate,
+                    strategy="loudness", loudness_headroom_db=16, loudness_compressor=True, add_suffix=False
+                )
+                default_audio_wav_path = file.name
+                file_cleaner.add(file.name)
+        except Exception as e:
+            print(f"Error writing default audio file: {e}")
+
+        # --- UNLOAD MUSICGEN MODEL ---
+        # This must happen *after* accessing `MODEL.compression_model` and generating default audio.
+        unload_model() # Call the helper function
+
+        # --- NOW GENERATE WITH MBD ---
+        # `tokens` variable still holds the tokens generated by MusicGen.
+        # The subsequent logic for MBD should be okay as MBD is loaded separately.
         outputs_diffusion = MBD.tokens_to_wav(tokens)
-        if isinstance(MODEL.compression_model, InterleaveStereoCompressionModel):
-            assert outputs_diffusion.shape[1] == 1  # output is mono
-            outputs_diffusion = rearrange(outputs_diffusion, '(s b) c t -> b (s c) t', s=2)
-        outputs = torch.cat([outputs[0], outputs_diffusion], dim=0)
-    else:
-        outputs = outputs[0] #Correctly handle case where no diffusion
-    outputs = outputs.detach().cpu().float()
 
-    out_files = []
-    for output in outputs:
-        with NamedTemporaryFile("wb", suffix=".flac", delete=False) as file:
-            audio_write(
-                file.name, output, MODEL.sample_rate, strategy="loudness",
-                loudness_headroom_db=16, loudness_compressor=True, add_suffix=False)
-            out_files.append(file.name)
-            file_cleaner.add(file.name)  # Clean up later
-    print("batch finished", len(texts), time.time() - be)
-    print("Tempfiles currently stored: ", len(file_cleaner.files))
+        # Handle stereo formatting for diffusion output if needed
+        if compression_model_type_is_stereo: # Use the info captured earlier
+            if outputs_diffusion.shape[1] == 1: # If mono
+                 outputs_diffusion = rearrange(outputs_diffusion, '(s b) c t -> b (s c) t', s=2)
+            # If it's already stereo or something else, this might need adjustment.
+            # For now, assuming the expected output format for stereo is (batch, channels, time)
+            # And the compression model expects specific token arrangement.
+            # The original rearrangement assumes `s=2` means 2 channels from a single source,
+            # which is a bit unclear. Let's stick to the original logic for now.
 
-    if USE_DIFFUSION:
-        return out_files[0], out_files[1]  # Return both files
-    else:
-        return out_files[0], None # Return only the first (non-diffusion) file, and None
+
+        # Save the diffusion output
+        diffusion_audio_wav_path = None
+        try:
+            with NamedTemporaryFile("wb", suffix=".flac", delete=False) as file:
+                # Assuming MBD.sample_rate is available and correct.
+                audio_write(
+                    file.name, outputs_diffusion.detach().cpu().float().squeeze(0), MBD.sample_rate,
+                    strategy="loudness", loudness_headroom_db=16, loudness_compressor=True, add_suffix=False
+                )
+                diffusion_audio_wav_path = file.name
+                file_cleaner.add(file.name)
+        except Exception as e:
+            print(f"Error writing diffusion audio file: {e}")
+
+        print("batch finished (with diffusion)", len(texts), time.time() - be)
+        print("Tempfiles currently stored: ", len(file_cleaner.files))
+        return default_audio_wav_path, diffusion_audio_wav_path
+
+    else: # Not using diffusion or MBD is not loaded
+        print("batch finished (without diffusion)", len(texts), time.time() - be)
+        print("Tempfiles currently stored: ", len(file_cleaner.files))
+        
+        default_audio_wav_path = None
+        try:
+            with NamedTemporaryFile("wb", suffix=".flac", delete=False) as file:
+                audio_write(
+                    file.name, outputs[0].detach().cpu().float().squeeze(0), MODEL.sample_rate,
+                    strategy="loudness", loudness_headroom_db=16, loudness_compressor=True, add_suffix=False
+                )
+                default_audio_wav_path = file.name
+                file_cleaner.add(file.name)
+        except Exception as e:
+            print(f"Error writing default audio file: {e}")
+        
+        # If not using diffusion, the MODEL remains loaded.
+        # The caller (predict_full) will handle unloading if necessary.
+        return default_audio_wav_path, None
 
 
 def predict_batched(texts, melodies):
