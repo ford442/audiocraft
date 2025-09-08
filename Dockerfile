@@ -44,7 +44,7 @@ RUN pip3 install --no-cache-dir av==11.0.0 julius==0.2.7 flashy==0.0.2 num2words
 RUN cd /home/appuser/app/audiocraft && pip3 install --no-cache-dir -e . --no-deps
 
 # Install FastAPI and Uvicorn
-RUN pip3 install --no-cache-dir fastapi uvicorn[standard]
+RUN pip3 install --no-cache-dir fastapi uvicorn[standard] gradio
 
 # Expose the port Vertex AI expects
 EXPOSE 8080
