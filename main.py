@@ -1,7 +1,5 @@
 import gradio as gr
 import torch
-import typing as tp
-import threading
 import uvicorn
 from fastapi import FastAPI, Request
 
@@ -9,7 +7,7 @@ from fastapi import FastAPI, Request
 from audiocraft.models import MusicGen
 from audiocraft.data.audio import audio_write
 
-# --- 1. Model Loading and Generation (from musicgen_app.py) ---
+# --- 1. Model Loading and Generation (Unchanged) ---
 
 MODEL = None  # Global variable to hold the model
 
@@ -19,10 +17,7 @@ def load_model(version):
     return MusicGen.get_pretrained(version)
 
 def predict(model, text, melody, duration, topk, topp, temperature, cfg_coef):
-    """
-    Main prediction function that generates audio.
-    This is the core logic from the original Gradio app.
-    """
+    """Main prediction function that generates audio."""
     global MODEL
     if MODEL is None or MODEL.name != model:
         MODEL = load_model(model)
@@ -56,43 +51,11 @@ def predict(model, text, melody, duration, topk, topp, temperature, cfg_coef):
     output = output.detach().cpu().float()
     out_files = []
     for idx, one_wav in enumerate(output):
-        # Will save under //tmp/
         file_path = audio_write(f'gen_{idx}', one_wav, MODEL.sample_rate, strategy="loudness", loudness_compressor=True)
         out_files.append(file_path)
     return out_files
 
-# --- 2. FastAPI Application Setup ---
-
-app = FastAPI()
-
-# Health check endpoint for Vertex AI
-@app.get("/healthz", status_code=200)
-def health_check():
-    return {"status": "ok"}
-
-# Prediction endpoint for Vertex AI (you can customize this)
-@app.post("/predict")
-async def api_predict(request: Request):
-    """
-    API endpoint for programmatic predictions.
-    This takes a JSON request and returns a JSON response.
-    """
-    data = await request.json()
-    text = data.get("text", "")
-    duration = data.get("duration", 10)
-    
-    # Simple generation for the API
-    if MODEL is None:
-        MODEL = load_model("melody") # Default model for API
-    MODEL.set_generation_params(duration=duration)
-    output = MODEL.generate(descriptions=[text])
-    
-    # For simplicity, we are not saving the file here, just returning a success message.
-    # In a real application, you would return a URL to the generated audio file.
-    return {"status": "prediction_complete", "input_text": text}
-
-
-# --- 3. Gradio Interface (from musicgen_app.py) ---
+# --- 2. Gradio Interface (Unchanged) ---
 
 def create_gradio_ui():
     """Builds and returns the Gradio web interface."""
@@ -125,20 +88,35 @@ def create_gradio_ui():
         submit.click(predict, inputs=[model, text, melody, duration, topk, topp, temperature, cfg_coef], outputs=[output])
     return ui
 
-# --- 4. Launching the App ---
+# --- 3. FastAPI Application Setup and Mounting ---
 
-def run_gradio():
-    """Creates and launches the Gradio UI."""
-    ui = create_gradio_ui()
-    # IMPORTANT: server_name="0.0.0.0" makes it accessible inside the container
-    # and server_port=8080 is the port Vertex AI expects.
-    ui.launch(server_name="0.0.0.0", server_port=8080)
+# Initialize the FastAPI app
+app = FastAPI()
 
-# Run Gradio in a separate thread so it doesn't block the FastAPI server
-gradio_thread = threading.Thread(target=run_gradio)
-gradio_thread.daemon = True
-gradio_thread.start()
+# Health check endpoint for Vertex AI
+@app.get("/healthz", status_code=200)
+def health_check():
+    return {"status": "ok"}
 
-# Main entry point for uvicorn server
+# Prediction endpoint for Vertex AI
+@app.post("/predict")
+async def api_predict(request: Request):
+    data = await request.json()
+    text = data.get("text", "")
+    duration = data.get("duration", 10)
+    
+    if MODEL is None:
+        MODEL = load_model("melody")
+    MODEL.set_generation_params(duration=duration)
+    output = MODEL.generate(descriptions=[text])
+    
+    return {"status": "prediction_complete", "input_text": text}
+
+# --- FIX: Create the Gradio UI and mount it onto the FastAPI app ---
+ui = create_gradio_ui()
+app = gr.mount_gradio_app(app, ui, path="/")
+
+
+# Main entry point for uvicorn server (this is now the only server)
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)
