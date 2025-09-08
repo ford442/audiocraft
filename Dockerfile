@@ -28,8 +28,14 @@ RUN pip3 install av==11.0.0 julius==0.2.7 flashy==0.0.2 num2words==0.5.14 torchd
 # Install the audiocraft package
 RUN cd /app/audiocraft && pip3 install -e . --no-deps
 
-# Expose the port Gradio runs on
-EXPOSE 7860
+# Install FastAPI and Uvicorn to serve the application
+RUN pip3 install --no-cache-dir fastapi uvicorn[standard]
 
-# Command to run the application
-CMD ["python3", "-m", "demos.musicgen_app", "--share"]
+# Copy the new main.py script into the container
+COPY main.py /home/appuser/app/
+
+# Expose the port Vertex AI expects
+EXPOSE 8080
+
+# Command to run the FastAPI server, which will also start Gradio
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
