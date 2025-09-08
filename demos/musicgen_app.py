@@ -19,6 +19,7 @@ import typing as tp
 import warnings
 
 from einops import rearrange
+
 import torch
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
@@ -29,7 +30,6 @@ torch.backends.cudnn.benchmark = False
 torch.backends.cuda.preferred_blas_library="cublas"
 torch.backends.cuda.preferred_linalg_library="cusolver"
 torch.set_float32_matmul_precision("highest")
-
 
 import gradio as gr
 import librosa  # Import librosa
@@ -317,6 +317,9 @@ def predict_full(model, model_path, decoder, text, melody, duration, topk, topp,
 
     max_generated = 0
 
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+    if sage==True:
     def _progress(generated, to_generate):
         nonlocal max_generated
         max_generated = max(generated, max_generated)
