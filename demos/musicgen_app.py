@@ -319,7 +319,6 @@ def predict_full(model, model_path, decoder, text, melody, duration, topk, topp,
 
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
-    if sage==True:
     def _progress(generated, to_generate):
         nonlocal max_generated
         max_generated = max(generated, max_generated)
