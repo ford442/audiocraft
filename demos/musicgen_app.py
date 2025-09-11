@@ -101,7 +101,10 @@ def load_model(version='facebook/musicgen-melody'):
            del MODEL
         torch.cuda.empty_cache()
         MODEL = None  # in case loading would crash
-        MODEL = MusicGen.get_pretrained(version)
+        if version == "facebook/musicgen-stereo-large":
+            MODEL = MusicGen.get_pretrained(version, torch_dtype=torch.bfloat16)
+        else:
+            MODEL = MusicGen.get_pretrained(version)
 
 
 def load_diffusion():
