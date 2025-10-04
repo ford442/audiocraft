@@ -6,7 +6,7 @@ import gc
 
 os.putenv('PYTORCH_NVML_BASED_CUDA_CHECK','1')
 os.putenv('TORCH_LINALG_PREFER_CUSOLVER','1')
-#os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True,pinned_use_background_threads:True'
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True,pinned_use_background_threads:True'
 os.environ["SAFETENSORS_FAST_GPU"] = "1"
 os.putenv('HF_HUB_ENABLE_HF_TRANSFER','1')
 
