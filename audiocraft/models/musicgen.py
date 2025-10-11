@@ -251,7 +251,7 @@ class MusicGen(BaseGenModel):
     def _generate_tokens(self, attributes: tp.List[ConditioningAttributes],
                          prompt_tokens: tp.Optional[torch.Tensor], progress: bool = False,
                          chunk_len: int = 1024, overlap_len: int = 128) -> torch.Tensor:
-        """Generate discrete audio tokens..."""
+        """Generate discrete audio tokens...
 
         Args:
             attributes (list of ConditioningAttributes): Conditions used for generation (text/melody).
