@@ -329,7 +329,6 @@ class MusicGen(BaseGenModel):
                         prompt_tokens, attributes,
                         callback=callback, max_gen_len=max_gen_len,  # Corrected from total_gen_len
                         chunk_len=chunk_len, overlap_len=overlap_len, **self.generation_params)
-        else:
                 if prompt_tokens is None:
                     all_tokens.append(gen_tokens)
                 else:
