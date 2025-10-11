@@ -285,7 +285,7 @@ def predict_batched(texts, melodies):
     return _do_predictions(texts, melodies, BATCHED_DURATION)
 
 
-def predict_full(model, model_path, decoder, text, melody, duration, topk, topp, temperature, cfg_coef, progress=gr.Progress()):
+def predict_full(model, model_path, decoder, text, melody, duration, topk, topp, temperature, cfg_coef, chunk_len, overlap_len, progress=gr.Progress()):
     global INTERRUPTING
     global USE_DIFFUSION
     INTERRUPTING = False
@@ -330,6 +330,7 @@ def predict_full(model, model_path, decoder, text, melody, duration, topk, topp,
     audio_file, diffusion_file = _do_predictions(
         [text], [melody], duration, progress=True,
         top_k=topk, top_p=topp, temperature=temperature, cfg_coef=cfg_coef,
+        chunk_len=chunk_len, overlap_len=overlap_len,  # Pass the new values
         gradio_progress=progress)
 
     # Return gr.Audio components directly, handling None for diffusion_file
@@ -390,6 +391,10 @@ def ui_full(launch_kwargs):
                 with gr.Row():
                     duration = gr.Slider(minimum=1, maximum=420, value=10, label="Duration", interactive=True)
                 with gr.Row():
+                    chunk_len = gr.Slider(minimum=128, maximum=2048, value=1024, step=128, label="Chunk Length", interactive=True)
+                    overlap_len = gr.Slider(minimum=16, maximum=512, value=128, step=16, label="Overlap Length", interactive=True)
+
+                with gr.Row():
                     topk = gr.Number(label="Top-k", value=250, interactive=True)
                     topp = gr.Number(label="Top-p", value=0, interactive=True)
                     temperature = gr.Number(label="Temperature", value=1.0, interactive=True)
@@ -404,7 +409,7 @@ def ui_full(launch_kwargs):
 
         submit.click(toggle_diffusion, decoder, [diffusion_output, audio_diffusion], queue=False,
                      show_progress=False).then(predict_full, inputs=[model, model_path, decoder, text, melody, duration, topk, topp,
-                                                                      temperature, cfg_coef],
+                                                                      temperature, cfg_coef, chunk_len, overlap_len],  # Add the new inputs
                                                 outputs=[output, audio_output, diffusion_output, audio_diffusion])
         radio.change(toggle_audio_src, radio, [melody], queue=False, show_progress=False)
 
@@ -415,40 +420,10 @@ def ui_full(launch_kwargs):
                     "An 80s driving pop song with heavy drums and synth pads in the background",
                     "./assets/bach.mp3",
                     "facebook/musicgen-stereo-melody",
-                    "Default", 10, 250, 0, 1.0, 3.0 #Include all parameters
-                ],
-                [
-                    "A cheerful country song with acoustic guitars",
-                    "./assets/bolero_ravel.mp3",
-                    "facebook/musicgen-stereo-melody",
-                    "Default", 10, 250, 0, 1.0, 3.0
-                ],
-                [
-                    "90s rock song with electric guitar and heavy drums",
-                    None,
-                    "facebook/musicgen-stereo-medium",
-                    "Default", 10, 250, 0, 1.0, 3.0
-                ],
-                [
-                    "a light and cheerly EDM track, with syncopated drums, aery pads, and strong emotions",
-                    "./assets/bach.mp3",
-                    "facebook/musicgen-stereo-melody",
-                    "Default", 10, 250, 0, 1.0, 3.0
-                ],
-                [
-                    "lofi slow bpm electro chill with organic samples",
-                    None,
-                    "facebook/musicgen-stereo-medium",
-                    "Default", 10, 250, 0, 1.0, 3.0
-                ],
-                [
-                    "Punk rock with loud drum and power guitar",
-                    None,
-                    "facebook/musicgen-stereo-medium",
-                    "MultiBand_Diffusion", 10, 250, 0, 1.0, 3.0
+                    "Default", 10, 250, 0, 1.0, 3.0, 1024, 128 # Add default chunk/overlap values
                 ],
             ],
-            inputs=[text, melody, model, decoder, duration, topk, topp, temperature, cfg_coef], # All inputs
+            inputs=[text, melody, model, decoder, duration, topk, topp, temperature, cfg_coef, chunk_len, overlap_len], # All inputs
             outputs=[output] # Output goes to the main output audio
         )
         gr.Markdown(
