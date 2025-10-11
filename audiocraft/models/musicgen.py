@@ -249,8 +249,9 @@ class MusicGen(BaseGenModel):
         return attributes, prompt_tokens
 
     def _generate_tokens(self, attributes: tp.List[ConditioningAttributes],
-                         prompt_tokens: tp.Optional[torch.Tensor], progress: bool = False) -> torch.Tensor:
-        """Generate discrete audio tokens given audio prompt and/or conditions.
+                         prompt_tokens: tp.Optional[torch.Tensor], progress: bool = False,
+                         chunk_len: int = 1024, overlap_len: int = 128) -> torch.Tensor:
+        """Generate discrete audio tokens..."""
 
         Args:
             attributes (list of ConditioningAttributes): Conditions used for generation (text/melody).
@@ -326,8 +327,9 @@ class MusicGen(BaseGenModel):
                 with self.autocast:
                     gen_tokens = self.lm.generate_in_chunks(
                         prompt_tokens, attributes,
-                        callback=callback, max_gen_len=total_gen_len, chunk_len=1024,
-                        overlap_len=128, **self.generation_params)
+                        callback=callback, max_gen_len=max_gen_len,  # Corrected from total_gen_len
+                        chunk_len=chunk_len, overlap_len=overlap_len, **self.generation_params)
+        else:
                 if prompt_tokens is None:
                     all_tokens.append(gen_tokens)
                 else:
