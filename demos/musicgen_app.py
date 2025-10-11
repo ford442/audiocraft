@@ -121,7 +121,7 @@ def unload_model():
         MODEL = None
         print("MusicGen model unloaded.")
 
-def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=None, **gen_kwargs):
+def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=None, chunk_len=1024, overlap_len=128, **gen_kwargs):
     # Ensure MODEL is loaded before proceeding
     if MODEL is None:
         print("Error: MODEL is None when entering _do_predictions.")
