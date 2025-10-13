@@ -4,11 +4,11 @@ import logging
 import os
 import gc
 
-os.environ('PYTORCH_NVML_BASED_CUDA_CHECK','1')
-os.environ('TORCH_LINALG_PREFER_CUSOLVER','1')
+os.environ['PYTORCH_NVML_BASED_CUDA_CHECK'] = '1'
+os.environ['TORCH_LINALG_PREFER_CUSOLVER] = '1'
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True,pinned_use_background_threads:True'
 os.environ["SAFETENSORS_FAST_GPU"] = "1"
-os.environ('HF_HUB_ENABLE_HF_TRANSFER','1')
+os.environ['HF_HUB_ENABLE_HF_TRANSFER] = '1'
 
 from pathlib import Path
 import subprocess as sp
