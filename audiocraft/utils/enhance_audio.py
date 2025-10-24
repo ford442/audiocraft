@@ -3,12 +3,11 @@ import librosa
 import soundfile as sf
 import numpy as np
 from pedalboard import Pedalboard
-from pedalboard.pedal import (
+from pedalboard import (
     Compressor,
-    HighShelf,
     Limiter,
-    LowShelf,
-    NoiseGate
+    NoiseGate,
+    Pedalboard
 )
 
 def enhance_audio(input_file: str, output_file: str):
@@ -84,11 +83,9 @@ def enhance_audio(input_file: str, output_file: str):
         )
 
     # --- Define the full processing board ---
-    board = Pedalboard([
+    board = pedalboard.Pedalboard([
     NoiseGate(threshold_db=-50, ratio=1.5, release_ms=250),
     Compressor(threshold_db=-14, ratio=2),
-    LowShelf(cutoff_frequency_hz=400, gain_db=2, q=0.707),
-    HighShelf(cutoff_frequency_hz=3000, gain_db=3, q=0.707),
     Limiter(threshold_db=-1, release_ms=50),
     ])
 
