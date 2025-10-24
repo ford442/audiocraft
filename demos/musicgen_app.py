@@ -34,6 +34,19 @@ torch.set_float32_matmul_precision("highest")
 import gradio as gr
 import librosa  # Import librosa
 
+try:
+    from enhance_audio import enhance_audio
+    ENHANCEMENT_AVAILABLE = True
+    print("Audio enhancement module loaded successfully.")
+except ImportError:
+    print("Warning: enhance_audio.py not found or dependencies (pedalboard, soundfile) missing. Audio enhancement will be disabled.")
+    ENHANCEMENT_AVAILABLE = False
+    
+    # Define a dummy function if import fails so the app doesn't crash
+    def enhance_audio(input_file, output_file):
+        print("Enhancement skipped (module not loaded).")
+        pass
+        
 from audiocraft.data.audio_utils import convert_audio
 from audiocraft.data.audio import audio_write
 from audiocraft.models.encodec import InterleaveStereoCompressionModel
@@ -146,7 +159,7 @@ def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=N
         raise gr.Error("MusicGen model is not loaded.")
 
     MODEL.set_generation_params(duration=duration, **gen_kwargs)
-    print("New batch:", len(texts), texts, [None if m is None else (m[0], m[1].shape) for m in melodies])
+    print("New batch:", len(texts), texts, [None if m is None else (m[0], m.shape) for m in melodies])
     be = time.time()
     processed_melodies = []
     target_sr = MODEL.sample_rate
@@ -157,6 +170,10 @@ def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=N
             processed_melodies.append(None)
         else:
             sr, melody_data = melody_input
+            # Ensure melody_data is numpy array
+            if not isinstance(melody_data, np.ndarray):
+                 melody_data = np.array(melody_data) # Convert if it's not
+            
             melody_tensor = torch.from_numpy(melody_data).to(MODEL.device).float()
             if melody_tensor.dim() == 1:
                 melody_tensor = melody_tensor[None]
@@ -191,21 +208,32 @@ def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=N
 
         tokens = outputs[1]
 
+        # --- NEW: ALWAYS SAVE DEFAULT (GAN) AUDIO ---
+        # This fixes the bug where default audio was lost when using diffusion.
+        print("Saving default (GAN) audio output...")
+        with NamedTemporaryFile("wb", suffix=".flac", delete=False) as file:
+            audio_write(
+                file.name, outputs[0].detach().cpu().float().squeeze(0), MODEL.sample_rate,
+                strategy="loudness", loudness_headroom_db=16, loudness_compressor=True, add_suffix=False
+            )
+            default_audio_wav_path = file.name
+            file_cleaner.add(file.name)
+        # --- END NEW ---
+
     except RuntimeError as e:
         print(f"Runtime error during generation: {e}")
         if "CUDA out of memory" in str(e):
             unload_model()
-        raise gr.Error("Error while generating: " + e.args[0])
+        raise gr.Error("Error while generating: "f"{e.args[0]}")
     except Exception as e:
         print(f"An unexpected error occurred during generation: {e}")
-        raise gr.Error("An unexpected error occurred during generation: " + str(e))
+        raise gr.Error("An unexpected error occurred during generation: "f"{e}")
 
     # --- Handle Diffusion ---
     if USE_DIFFUSION and MBD is not None:
         print("Applying MultiBandDiffusion...")
         if gradio_progress is not None:
             gradio_progress(0.5, desc='Applying MultiBandDiffusion...')
-        print(f"VRAM allocated before unload: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
 
         tokens_for_mbd = tokens
         try:
@@ -229,9 +257,7 @@ def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=N
         except Exception as e:
             print(f"Error during stereo token processing: {e}")
             raise gr.Error(f"Failed to prepare tokens for MBD due to stereo processing error: {e}")
-        tokens_for_mbd = tokens_for_mbd.to('cpu')
         
-        # Explicitly delete all other GPU-based tensors from MusicGen
         try:
             del tokens
             del outputs
@@ -241,47 +267,32 @@ def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=N
                 del left_codes
             if 'right_codes' in locals():
                 del right_codes
-            print("Intermediate tensors deleted.")
-        except Exception as e:
-            print(f"Error deleting intermediate tensors: {e}")
-
-        # --- UNLOAD MUSICGEN MODEL ---
-        # Call your new, more robust function
-        unload_model() 
+        except NameError:
+            pass
         
-        # At this point, VRAM should be significantly lower.
-        # You can add this line to check:
-        print(f"VRAM allocated after unload: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+        # --- UNLOAD MUSICGEN MODEL ---
+        unload_model()
 
         # --- NOW GENERATE WITH MBD using the prepared tokens ---
         try:
-            print("Moving tokens back to GPU for MBD processing...")
-            # Load MBD (if it wasn't already)
-            load_diffusion() # Make sure MBD is on GPU
+            print("Moving tokens to GPU for MBD processing...")
+            outputs_diffusion = MBD.tokens_to_wav(tokens_for_mbd.to(MBD.device))
             
-            # Move tensors to the MBD's device
-            outputs_diffusion = MBD.tokens_to_wav(tokens_for_mbd.to(MBD.device))         
-            # --- Stereo formatting for diffusion output (if needed) ---
             if stereo_processing_needed:
-                if outputs_diffusion.ndim == 3 and outputs_diffusion.shape[1] == 1: # If batch, mono, time
+                if outputs_diffusion.ndim == 3 and outputs_diffusion.shape[1] == 1:
                     print("Rearranging diffusion output from mono to stereo...")
                     outputs_diffusion = rearrange(outputs_diffusion, '(s b) c t -> b (s c) t', s=2)
-                elif outputs_diffusion.ndim == 2: # If batch, time (mono)
-                    print("Rearranging diffusion output from mono (batch, time) to stereo (batch, 2, time)...")
-                    # Assuming b is batch size, and we want to insert a channel dimension
-                    outputs_diffusion = rearrange(outputs_diffusion, 'b t -> b 1 t') # Add channel dim first
-                    # Now if MBD expects (batch, 2, time), we might need another step.
-                    # The original was `(s b) c t -> b (s c) t`. If MBD outputs (2, T) or (B, 2, T), this might be fine.
-                    # If MBD outputs (B, 1, T) and expects (B, 2, T), then we'd need to duplicate channels.
-                    # Let's stick to the original `rearrange` if it implies (2, T) or (2, 1, T) from MBD.
-                    # The previous fix was trying to match the original rearrange:
-                    # If `outputs_diffusion` is `(2, T)` and expected `(1, 2, T)` or similar
-                    # The original code implies `outputs_diffusion` *is* stereo when it's `(s b) c t`.
-                    # If `outputs_diffusion` is `(2, T)` from MBD, and that's stereo, it's fine.
-                    # If it's `(1, T)` (mono), we need to make it stereo.
-                    if outputs_diffusion.shape[1] == 1: # If shape is (Batch, 1, Time)
-                        print("Duplicating mono channel to create stereo output...")
-                        outputs_diffusion = outputs_diffusion.repeat(1, 2, 1) # Duplicate channel
+                elif outputs_diffusion.ndim == 2:
+                    print("Warning: MBD output is 2D, handling as (batch, time) or (channels, time).")
+                    if outputs_diffusion.shape[0] == 2: # Likely (2, T)
+                         print("Assuming (2, T) stereo output, adding batch dimension.")
+                         outputs_diffusion = outputs_diffusion.unsqueeze(0) # (1, 2, T)
+                    else: # Likely (B, T) mono
+                         print("Assuming (B, T) mono output, duplicating channel for stereo.")
+                         outputs_diffusion = outputs_diffusion.unsqueeze(1).repeat(1, 2, 1) # (B, 1, T) -> (B, 2, T)
+                elif outputs_diffusion.ndim == 3 and outputs_diffusion.shape[1] != 2:
+                     print(f"Warning: MBD output is 3D but not 2 channels (shape: {outputs_diffusion.shape}). Duplicating channel 0.")
+                     outputs_diffusion = outputs_diffusion[:, :1, :].repeat(1, 2, 1) # (B, C, T) -> (B, 1, T) -> (B, 2, T)
 
             # Save the diffusion output
             with NamedTemporaryFile("wb", suffix=".flac", delete=False) as file:
@@ -300,25 +311,14 @@ def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=N
 
         print("batch finished (with diffusion)", len(texts), time.time() - be)
         print("Tempfiles currently stored: ", len(file_cleaner.files))
-        # Now both variables are guaranteed to have a value (either a path or None)
+        
+        # Now we return BOTH paths, with the bug fixed.
         return default_audio_wav_path, diffusion_audio_wav_path
 
     else: # Not using diffusion or MBD is not loaded
-        # Save the default output
-        try:
-            with NamedTemporaryFile("wb", suffix=".flac", delete=False) as file:
-                audio_write(
-                    file.name, outputs[0].detach().cpu().float().squeeze(0), MODEL.sample_rate,
-                    strategy="loudness", loudness_headroom_db=16, loudness_compressor=True, add_suffix=False
-                )
-                default_audio_wav_path = file.name
-                file_cleaner.add(file.name)
-        except Exception as e:
-            print(f"Error writing default audio file: {e}")
-
-        # If not using diffusion, MODEL remains loaded.
-        # The caller (predict_full) will handle unloading if necessary.
-        return default_audio_wav_path, None # diffusion_audio_wav_path is still None here, which is correct.
+        # We already saved the default audio. Just return.
+        print("batch finished (no diffusion)", len(texts), time.time() - be)
+        return default_audio_wav_path, None
 
 def predict_batched(texts, melodies):
     max_text_length = 512
@@ -328,7 +328,7 @@ def predict_batched(texts, melodies):
     return _do_predictions(texts, melodies, BATCHED_DURATION)
 
 
-def predict_full(model, model_path, decoder, text, melody, duration, topk, topp, temperature, cfg_coef, chunk_len, overlap_len, progress=gr.Progress()):
+def predict_full(model, model_path, decoder, text, melody, duration, topk, topp, temperature, cfg_coef, chunk_len, overlap_len, enhance, progress=gr.Progress()):
     global INTERRUPTING
     global USE_DIFFUSION
     INTERRUPTING = False
@@ -366,20 +366,62 @@ def predict_full(model, model_path, decoder, text, melody, duration, topk, topp,
         max_generated = max(generated, max_generated)
         progress((min(max_generated, to_generate), to_generate))
         if INTERRUPTING:
-            raise gr.Error("Interrupted.")  # Correct interruption handling
+            raise gr.Error("Interrupted.")
     MODEL.set_custom_progress_callback(_progress)
     MODEL.set_generation_params(extend_stride=6)
-    # Call _do_predictions and unpack the results correctly
+    
+    # Call _do_predictions - this now correctly returns (default_path, diffusion_path)
     audio_file, diffusion_file = _do_predictions(
         [text], [melody], duration, progress=True,
         top_k=topk, top_p=topp, temperature=temperature, cfg_coef=cfg_coef,
-        chunk_len=chunk_len, overlap_len=overlap_len,  # Pass the new values
-        gradio_progress=progress)
+        chunk_len=chunk_len, overlap_len=overlap_len,
+        gradio_progress=progress
+    )
 
-    # Return gr.Audio components directly, handling None for diffusion_file
-    return gr.Audio(value=audio_file, label="Generated Music (wav)"), audio_file, \
-           gr.Audio(value=diffusion_file, label="MultiBand Diffusion Decoder (wav)") if diffusion_file else None, \
-           diffusion_file if diffusion_file else None
+    # --- NEW ENHANCEMENT LOGIC ---
+    # These will hold the *final* paths to return
+    final_audio_file = audio_file
+    final_diffusion_file = diffusion_file
+
+    if enhance and ENHANCEMENT_AVAILABLE:
+        progress(0.9, desc="Enhancing audio...")
+        
+        if audio_file:
+            try:
+                # Create a new temp file for the enhanced version
+                with NamedTemporaryFile("wb", suffix=".flac", delete=False) as f:
+                    enhanced_default_path = f.name
+                
+                enhance_audio(audio_file, enhanced_default_path)
+                
+                final_audio_file = enhanced_default_path
+                file_cleaner.add(enhanced_default_path) # Add new file to cleaner
+            except Exception as e:
+                print(f"Failed to enhance default audio: {e}")
+                # final_audio_file remains the original audio_file
+
+        if diffusion_file:
+            try:
+                # Create another temp file
+                with NamedTemporaryFile("wb", suffix=".flac", delete=False) as f:
+                    enhanced_diffusion_path = f.name
+                
+                enhance_audio(diffusion_file, enhanced_diffusion_path)
+                
+                final_diffusion_file = enhanced_diffusion_path
+                file_cleaner.add(enhanced_diffusion_path)
+            except Exception as e:
+                print(f"Failed to enhance diffusion audio: {e}")
+                # final_diffusion_file remains the original diffusion_file
+    
+    # If not enhancing, the 'final' paths are just the original paths.
+
+    # --- END ENHANCEMENT LOGIC ---
+
+    # Return the *final* file paths to the Gradio components
+    return gr.Audio(value=final_audio_file, label="Generated Music"), final_audio_file, \
+           gr.Audio(value=final_diffusion_file, label="MultiBand Diffusion Decoder") if final_diffusion_file else None, \
+           final_diffusion_file if final_diffusion_file else None
 
 
 
@@ -432,6 +474,10 @@ def ui_full(launch_kwargs):
                     decoder = gr.Radio(["Default", "MultiBand_Diffusion"],
                                        label="Decoder", value="Default", interactive=True)
                 with gr.Row():
+                    enhance = gr.Checkbox(label="Enhance Audio (44.1kHz Stereo + Mastering)", 
+                                          value=True, 
+                                          interactive=ENHANCEMENT_AVAILABLE)
+                with gr.Row():
                     duration = gr.Slider(minimum=1, maximum=420, value=10, label="Duration", interactive=True)
                 with gr.Row():
                     chunk_len = gr.Slider(minimum=128, maximum=2048, value=1024, step=128, label="Chunk Length", interactive=True)
@@ -451,9 +497,11 @@ def ui_full(launch_kwargs):
 
 
         submit.click(toggle_diffusion, decoder, [diffusion_output, audio_diffusion], queue=False,
-                     show_progress=False).then(predict_full, inputs=[model, model_path, decoder, text, melody, duration, topk, topp,
-                                                                      temperature, cfg_coef, chunk_len, overlap_len],  # Add the new inputs
-                                                outputs=[output, audio_output, diffusion_output, audio_diffusion])
+                     show_progress=False).then(predict_full, 
+                                               inputs=[model, model_path, decoder, text, melody, 
+                                                       duration, topk, topp, temperature, cfg_coef, 
+                                                       chunk_len, overlap_len, enhance], # <-- ADDED 'enhance'
+                                               outputs=[output, audio_output, diffusion_output, audio_diffusion])
         radio.change(toggle_audio_src, radio, [melody], queue=False, show_progress=False)
 
         gr.Examples(
