@@ -35,7 +35,7 @@ import gradio as gr
 import librosa  # Import librosa
 
 try:
-    from enhance_audio import enhance_audio
+    from audiocraft.utils.enhance_audio import enhance_audio
     ENHANCEMENT_AVAILABLE = True
     print("Audio enhancement module loaded successfully.")
 except ImportError:
