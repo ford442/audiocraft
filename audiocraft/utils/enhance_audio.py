@@ -7,7 +7,8 @@ from pedalboard import (
     Compressor,
     Limiter,
     NoiseGate,
-    Pedalboard
+    Pedalboard,
+    Reverb
 )
 
 def enhance_audio(input_file: str, output_file: str):
