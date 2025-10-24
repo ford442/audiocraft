@@ -129,25 +129,26 @@ def unload_model():
     """Helper function to unload the current MusicGen model."""
     global MODEL
     if MODEL is not None:
-        print("Moving MusicGen model to CPU...")
+        print("Moving MusicGen model components to CPU...")
         try:
-            # Move all model parameters and buffers to CPU
-            MODEL.to('cpu')
-            print("MusicGen model moved to CPU.")
+            # Move the two nn.Module components to CPU
+            # These are the objects that actually live on the GPU
+            if MODEL.lm:
+                MODEL.lm.to('cpu')
+            if MODEL.compression_model:
+                MODEL.compression_model.to('cpu')
+            print("MusicGen model components moved to CPU.")
         except Exception as e:
-            print(f"Error moving model to CPU: {e}")
+            print(f"Error moving model components to CPU: {e}")
             
         print("Unloading MusicGen model...")
         del MODEL
         
-        # Now, garbage collection is much more likely to succeed
         gc.collect()
         
         if torch.cuda.is_available():
             print("Emptying CUDA cache...")
             torch.cuda.empty_cache()
-            # You can even add this for a deeper clean, though it's often redundant
-            # torch.cuda.synchronize() 
             
         MODEL = None
         print("MusicGen model unloaded and CUDA cache cleared.")
