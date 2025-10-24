@@ -210,14 +210,26 @@ def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=N
         except Exception as e:
             print(f"Error during stereo token processing: {e}")
             raise gr.Error(f"Failed to prepare tokens for MBD due to stereo processing error: {e}")
-
+        # *** MODIFICATION 2: Explicitly delete all intermediate GPU tensors ***
+        # This ensures all references to the MODEL's graph are gone.
+        try:
+            del tokens
+            del outputs
+            if 'stereo_codes' in locals():
+                del stereo_codes
+            if 'left_codes' in locals():
+                del left_codes
+            if 'right_codes' in locals():
+                del right_codes
+        except NameError:
+            pass  # Ignore if some variables don't exist (e.g., non-stereo path)
         # --- UNLOAD MUSICGEN MODEL ---
         unload_model()
 
         # --- NOW GENERATE WITH MBD using the prepared tokens ---
         try:
-            outputs_diffusion = MBD.tokens_to_wav(tokens_for_mbd)
-            
+            print("Moving tokens to GPU for MBD processing...")
+            outputs_diffusion = MBD.tokens_to_wav(tokens_for_mbd.to(MBD.device))            
             # --- Stereo formatting for diffusion output (if needed) ---
             if stereo_processing_needed:
                 if outputs_diffusion.ndim == 3 and outputs_diffusion.shape[1] == 1: # If batch, mono, time
