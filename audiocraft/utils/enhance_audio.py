@@ -10,7 +10,6 @@ from pedalboard.pedal import (
     Reverb
 )
 import librosa # Make sure librosa is imported if used for resampling
-import traceback # <-- Add this import
 
 # --- Your existing board definition should be here ---
 # Example (adjust based on your previous fixes):
@@ -114,8 +113,6 @@ def enhance(input_path: str, output_path: str = None, target_sr: int = 44100):
         print(f"!!! FAILED TO ENHANCE AUDIO in enhance_audio.py !!!")
         print(f"Error Type: {type(e).__name__}")
         print(f"Error Message: {e}")
-        print("Traceback:")
-        traceback.print_exc() # Print the full traceback
         # We don't re-raise, allowing the main script to continue if needed,
         # but the error will be clearly printed.
 
