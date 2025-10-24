@@ -109,18 +109,36 @@ def load_diffusion():
         print("loading MBD")
         MBD = MultiBandDiffusion.get_mbd_musicgen()
 
+import gc
+import torch
+
 def unload_model():
     """Helper function to unload the current MusicGen model."""
     global MODEL
     if MODEL is not None:
+        print("Moving MusicGen model to CPU...")
+        try:
+            # Move all model parameters and buffers to CPU
+            MODEL.to('cpu')
+            print("MusicGen model moved to CPU.")
+        except Exception as e:
+            print(f"Error moving model to CPU: {e}")
+            
         print("Unloading MusicGen model...")
         del MODEL
+        
+        # Now, garbage collection is much more likely to succeed
         gc.collect()
+        
         if torch.cuda.is_available():
+            print("Emptying CUDA cache...")
             torch.cuda.empty_cache()
+            # You can even add this for a deeper clean, though it's often redundant
+            # torch.cuda.synchronize() 
+            
         MODEL = None
-        print("MusicGen model unloaded.")
-
+        print("MusicGen model unloaded and CUDA cache cleared.")
+        
 def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=None, chunk_len=1024, overlap_len=128, **gen_kwargs):
     # Ensure MODEL is loaded before proceeding
     if MODEL is None:
@@ -187,6 +205,7 @@ def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=N
         print("Applying MultiBandDiffusion...")
         if gradio_progress is not None:
             gradio_progress(0.5, desc='Applying MultiBandDiffusion...')
+        print(f"VRAM allocated before unload: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
 
         tokens_for_mbd = tokens
         try:
@@ -210,8 +229,9 @@ def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=N
         except Exception as e:
             print(f"Error during stereo token processing: {e}")
             raise gr.Error(f"Failed to prepare tokens for MBD due to stereo processing error: {e}")
-        # *** MODIFICATION 2: Explicitly delete all intermediate GPU tensors ***
-        # This ensures all references to the MODEL's graph are gone.
+        tokens_for_mbd = tokens_for_mbd.to('cpu')
+        
+        # Explicitly delete all other GPU-based tensors from MusicGen
         try:
             del tokens
             del outputs
@@ -221,15 +241,26 @@ def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=N
                 del left_codes
             if 'right_codes' in locals():
                 del right_codes
-        except NameError:
-            pass  # Ignore if some variables don't exist (e.g., non-stereo path)
+            print("Intermediate tensors deleted.")
+        except Exception as e:
+            print(f"Error deleting intermediate tensors: {e}")
+
         # --- UNLOAD MUSICGEN MODEL ---
-        unload_model()
+        # Call your new, more robust function
+        unload_model() 
+        
+        # At this point, VRAM should be significantly lower.
+        # You can add this line to check:
+        print(f"VRAM allocated after unload: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
 
         # --- NOW GENERATE WITH MBD using the prepared tokens ---
         try:
-            print("Moving tokens to GPU for MBD processing...")
-            outputs_diffusion = MBD.tokens_to_wav(tokens_for_mbd.to(MBD.device))            
+            print("Moving tokens back to GPU for MBD processing...")
+            # Load MBD (if it wasn't already)
+            load_diffusion() # Make sure MBD is on GPU
+            
+            # Move tensors to the MBD's device
+            outputs_diffusion = MBD.tokens_to_wav(tokens_for_mbd.to(MBD.device))         
             # --- Stereo formatting for diffusion output (if needed) ---
             if stereo_processing_needed:
                 if outputs_diffusion.ndim == 3 and outputs_diffusion.shape[1] == 1: # If batch, mono, time
