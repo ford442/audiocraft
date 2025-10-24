@@ -2,8 +2,8 @@
 import librosa
 import soundfile as sf
 import numpy as np
-from pedalboard import Pedalboard
-from pedalboard import (
+import pedalboard
+from pedalboard.pedal import (
     Compressor,
     Limiter,
     NoiseGate,
