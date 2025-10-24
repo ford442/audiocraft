@@ -149,7 +149,7 @@ def unload_model():
         if torch.cuda.is_available():
             print("Emptying CUDA cache...")
             torch.cuda.empty_cache()
-            torch.cuda.reset_peak_memory_stats()()
+            torch.cuda.reset_peak_memory_stats()
             
         MODEL = None
         print("MusicGen model unloaded and CUDA cache cleared.")
