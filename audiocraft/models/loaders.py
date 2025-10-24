@@ -68,7 +68,7 @@ def _get_state_dict(
             library_name="audiocraft",
             library_version=audiocraft.__version__,
         )
-        return torch.load(file, map_location=device)
+        return torch.load(file, map_location=device, weights_only=False)
 
 
 def load_compression_model_ckpt(file_or_url_or_id: tp.Union[Path, str], cache_dir: tp.Optional[str] = None):
