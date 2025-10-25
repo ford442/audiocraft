@@ -106,7 +106,7 @@ wav_output_44k = resampler(wav_C.squeeze(0)) # Remove batch dim
 torchaudio.save(
     output_filename,
     wav_output_44k.cpu(), # Move to CPU for saving
-    TARGET_SR,
+    44100,
     format="flac" # <-- EXPLICITLY SET FORMAT
 )
 print(f"Done! Your new song is saved as: {output_filename}")
