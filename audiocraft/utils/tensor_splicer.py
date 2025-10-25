@@ -101,7 +101,7 @@ audio_write(
     wav_C.squeeze(0).cpu(), # Remove batch dim and move to CPU
     model.sample_rate
 )
-resampler = Resample(orig_freq=MODEL_SR, new_freq=TARGET_SR)
+resampler = Resample(orig_freq=MODEL_SR, new_freq=44100)
 wav_output_44k = resampler(wav_C.squeeze(0)) # Remove batch dim
 torchaudio.save(
     output_filename,
