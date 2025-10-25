@@ -1,7 +1,9 @@
 import torch
 import torchaudio
-from audiocraft.models import EnCodecModel
+
+from audiocraft.models import EncodecModel
 from audiocraft.data.audio import audio_write
+from torchaudio.transforms import Resample # <-- ADDED IMPORT
 
 def load_and_prepare_audio(file_path, model, target_length_sec=10):
     """
@@ -39,39 +41,44 @@ def load_and_prepare_audio(file_path, model, target_length_sec=10):
 print("Loading EnCodec model...")
 # Load the pre-trained EnCodec model
 # 'facebook/encodec_32khz' is a good high-quality model
-model = EnCodecModel.from_pretrained('facebook/encodec_32khz')
-model.set_target_bandwidth(6.0) # Set a reasonable bandwidth (6 kbps)
+model = EncodecModel.get_pretrained('facebook/encodec_32khz')
+MODEL_SR = model.sample_rate # <-- FIXED: Define MODEL_SR right after loading
 
 # --- 1. Load and Prepare Audio ---
 # We must make the songs the same length. Let's use 10 seconds.
-TARGET_DURATION_SEC = 10 
+TARGET_DURATION_SEC = 300
 
 print("Loading and preparing content song (song_A)...")
 # This song will provide the MELODY and STRUCTURE
-wav_A = load_and_prepare_audio('song_content.wav', model, TARGET_DURATION_SEC)
+wav_A = load_and_prepare_audio('song_content.mp3', model, TARGET_DURATION_SEC)
 
 print("Loading and preparing style song (song_B)...")
 # This song will provide the TIMBRE and STYLE
-wav_B = load_and_prepare_audio('song_style.wav', model, TARGET_DURATION_SEC)
+wav_B = load_and_prepare_audio('song_style.mp3', model, TARGET_DURATION_SEC)
+TARGET_BANDWIDTH = 6.0 # <-- ADDED VARIABLE
 
-# --- 2. Encode to "Tensor Level" ---
-print("Encoding both songs to their tensor representations...")
 # 'codes' is a tensor of shape [batch, num_quantizers, time]
-# This is the "tensor level" you were talking about!
-# We only need the codes, not the scale (hence [0])
-codes_A = model.encode(wav_A)[0]
-codes_B = model.encode(wav_B)[0]
+# We pass the bandwidth directly to the encode method.
+codes_A = model.encode(wav_A )[0] # <-- CHANGED
+codes_B = model.encode(wav_B )[0] # <-- CHANGED
 
-print(f"Tensor shape: {codes_A.shape}") # e.g., [1, 8, 750] (Batch, Quantizers, Time)
+# The number of quantizers is the 2nd dimension (dim=1)
+num_quantizers = codes_A.shape[1]
+print(f"Tensor shape: {codes_A.shape}") # e.g., [1, 8, 750]
+print(f"Total quantizers available (based on {TARGET_BANDWIDTH}kbps): {num_quantizers}")
 
 # --- 3. Splice the Tensors ---
 print("Splicing tensors...")
 
 # This is your main creative control!
-# The model has model.quantizer.n_q quantizers (e.g., 8).
 # We take the first 'k' from Song A (content) and the rest from Song B (style).
-# A good starting point is 2 or 4.
-SPLICE_POINT = 2 
+# A good starting point is 2 or 4 (out of 8).
+SPLICE_POINT = 3
+
+if SPLICE_POINT >= num_quantizers:
+    print(f"Warning: SPLICE_POINT ({SPLICE_POINT}) is >= total quantizers ({num_quantizers}).")
+    print("The output will just be song_content.wav.")
+    SPLICE_POINT = num_quantizers
 
 # Create a new empty tensor to hold the combined codes
 codes_C = torch.zeros_like(codes_A)
@@ -94,5 +101,12 @@ audio_write(
     wav_C.squeeze(0).cpu(), # Remove batch dim and move to CPU
     model.sample_rate
 )
-
+resampler = Resample(orig_freq=MODEL_SR, new_freq=TARGET_SR)
+wav_output_44k = resampler(wav_C.squeeze(0)) # Remove batch dim
+torchaudio.save(
+    output_filename,
+    wav_output_44k.cpu(), # Move to CPU for saving
+    TARGET_SR,
+    format="flac" # <-- EXPLICITLY SET FORMAT
+)
 print(f"Done! Your new song is saved as: {output_filename}")
