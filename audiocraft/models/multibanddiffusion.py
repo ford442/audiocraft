@@ -180,15 +180,17 @@ class MultiBandDiffusion:
         return out
 
     def tokens_to_wav(self, tokens: torch.Tensor, n_bands: int = 32, n_steps: int = 50):
-        """Generate Waveform audio with diffusion from the discrete codes.
-        Args:
-            tokens (torch.Tensor): Discrete codes.
-            n_bands (int): Bands for the eq matching.
-            n_steps (int): Number of steps for the diffusion.
-        """
+        """Generate Waveform audio with diffusion from the discrete codes."""
         wav_encodec = self.codec_model.decode(tokens)
         condition = self.get_emb(tokens)
-        max_steps = self.DPs[0].schedule.num_steps
-        step_list = [int(x) for x in torch.linspace(0, max_steps - 1, n_steps)]
+        
+        # Dynamically find the max steps (usually 1000)
+        max_steps = self.DPs[0].schedule.num_steps 
+        
+        # --- FIX: DESCENDING ORDER (High -> Low) ---
+        step_list = [int(x) for x in torch.linspace(max_steps - 1, 0, n_steps)]
+        # -------------------------------------------
+
         wav_diffusion = self.generate(emb=condition, size=wav_encodec.size(), step_list=step_list)
+        
         return self.re_eq(wav=wav_diffusion, ref=wav_encodec, n_bands=n_bands)
