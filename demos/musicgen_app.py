@@ -202,11 +202,19 @@ def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=N
                 melody_wavs=processed_melodies,
                 melody_sample_rate=target_sr,
                 progress=progress,
-                return_tokens=True
+                return_tokens=True,
+                chunk_len=chunk_len,      # <--- ADD THIS
+                overlap_len=overlap_len   # <--- ADD THIS
             )
         else:
             print("Generating without chroma...")
-            outputs = MODEL.generate(texts, progress=progress, return_tokens=True)
+            outputs = MODEL.generate(
+                texts, 
+                progress=progress, 
+                return_tokens=True,
+                chunk_len=chunk_len,      # <--- ADD THIS
+                overlap_len=overlap_len   # <--- ADD THIS
+            )
 
         tokens = outputs[1]
 
