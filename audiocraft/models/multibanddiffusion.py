@@ -179,13 +179,16 @@ class MultiBandDiffusion:
             out = julius.resample_frac(out, self.codec_model.sample_rate, sample_rate)
         return out
 
-    def tokens_to_wav(self, tokens: torch.Tensor, n_bands: int = 32):
+    def tokens_to_wav(self, tokens: torch.Tensor, n_bands: int = 32, n_steps: int = 50):
         """Generate Waveform audio with diffusion from the discrete codes.
         Args:
             tokens (torch.Tensor): Discrete codes.
             n_bands (int): Bands for the eq matching.
+            n_steps (int): Number of steps for the diffusion.
         """
         wav_encodec = self.codec_model.decode(tokens)
         condition = self.get_emb(tokens)
-        wav_diffusion = self.generate(emb=condition, size=wav_encodec.size())
+        max_steps = self.DPs[0].schedule.num_steps
+        step_list = [int(x) for x in torch.linspace(0, max_steps - 1, n_steps)]
+        wav_diffusion = self.generate(emb=condition, size=wav_encodec.size(), step_list=step_list)
         return self.re_eq(wav=wav_diffusion, ref=wav_encodec, n_bands=n_bands)

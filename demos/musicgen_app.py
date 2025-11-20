@@ -154,7 +154,7 @@ def unload_model():
         MODEL = None
         print("MusicGen model unloaded and CUDA cache cleared.")
         
-def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=None, chunk_len=1024, overlap_len=128, **gen_kwargs):
+def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=None, chunk_len=1024, overlap_len=128, mbd_steps=50, **gen_kwargs):
     # Ensure MODEL is loaded before proceeding
     if MODEL is None:
         print("Error: MODEL is None when entering _do_predictions.")
@@ -277,9 +277,9 @@ def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=N
 
         # --- NOW GENERATE WITH MBD using the prepared tokens ---
         try:
-            print("Moving tokens to GPU for MBD processing...")
-            outputs_diffusion = MBD.tokens_to_wav(tokens_for_mbd.to(MBD.device))
-            
+            print(f"Moving tokens to GPU for MBD processing (Steps: {mbd_steps})...")
+            outputs_diffusion = MBD.tokens_to_wav(tokens_for_mbd.to(MBD.device), n_steps=mbd_steps)
+
             if stereo_processing_needed:
                 if outputs_diffusion.ndim == 3 and outputs_diffusion.shape[1] == 1:
                     print("Rearranging diffusion output from mono to stereo...")
@@ -330,7 +330,7 @@ def predict_batched(texts, melodies):
     return _do_predictions(texts, melodies, BATCHED_DURATION)
 
 
-def predict_full(model, model_path, decoder, text, melody, duration, topk, topp, temperature, cfg_coef, chunk_len, overlap_len, enhance, progress=gr.Progress()):
+def predict_full(model, model_path, decoder, text, melody, duration, topk, topp, temperature, cfg_coef, chunk_len, overlap_len, enhance, mbd_steps, progress=gr.Progress()):
     global INTERRUPTING
     global USE_DIFFUSION
     INTERRUPTING = False
@@ -377,6 +377,7 @@ def predict_full(model, model_path, decoder, text, melody, duration, topk, topp,
         [text], [melody], duration, progress=True,
         top_k=topk, top_p=topp, temperature=temperature, cfg_coef=cfg_coef,
         chunk_len=chunk_len, overlap_len=overlap_len,
+        mbd_steps=mbd_steps,
         gradio_progress=progress
     )
 
@@ -436,9 +437,9 @@ def toggle_audio_src(choice):
 
 def toggle_diffusion(choice):
     if choice == "MultiBand_Diffusion":
-        return [gr.update(visible=True)] * 2
+        return [gr.update(visible=True)] * 3
     else:
-        return [gr.update(visible=False)] * 2
+        return [gr.update(visible=False)] * 3
 
 
 def ui_full(launch_kwargs):
@@ -475,6 +476,8 @@ def ui_full(launch_kwargs):
                 with gr.Row():
                     decoder = gr.Radio(["Default", "MultiBand_Diffusion"],
                                        label="Decoder", value="Default", interactive=True)
+                    mbd_steps = gr.Slider(minimum=10, maximum=200, value=50, step=10,
+                                          label="MBD Quality Steps", visible=False, interactive=True)
                 with gr.Row():
                     enhance = gr.Checkbox(label="Enhance Audio (44.1kHz Stereo + Mastering)", 
                                           value=True, 
@@ -498,12 +501,13 @@ def ui_full(launch_kwargs):
                 audio_diffusion = gr.Audio(label="MultiBand Diffusion Decoder (wav)", type='filepath', visible=False) # Keep this for compatibility
 
 
-        submit.click(toggle_diffusion, decoder, [diffusion_output, audio_diffusion], queue=False,
-                     show_progress=False).then(predict_full, 
-                                               inputs=[model, model_path, decoder, text, melody, 
-                                                       duration, topk, topp, temperature, cfg_coef, 
-                                                       chunk_len, overlap_len, enhance], # <-- ADDED 'enhance'
-                                               outputs=[output, audio_output, diffusion_output, audio_diffusion])
+        submit.click(toggle_diffusion, decoder, [diffusion_output, audio_diffusion, mbd_steps], queue=False,
+                     show_progress=False).then(
+            predict_full,
+            inputs=[model, model_path, decoder, text, melody, duration, topk, topp, temperature, cfg_coef,
+                    chunk_len, overlap_len, enhance, mbd_steps],
+            outputs=[output, audio_output, diffusion_output, audio_diffusion]
+        )
         radio.change(toggle_audio_src, radio, [melody], queue=False, show_progress=False)
 
         gr.Examples(
