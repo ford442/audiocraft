@@ -130,17 +130,28 @@ def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=N
             melody = convert_audio(melody, sr, target_sr, target_ac)
             processed_melodies.append(melody)
 
-    try:
+try:
         if any(m is not None for m in processed_melodies):
+            print("Generating with chroma...")
             outputs = MODEL.generate_with_chroma(
                 descriptions=texts,
                 melody_wavs=processed_melodies,
                 melody_sample_rate=target_sr,
                 progress=progress,
-                return_tokens=USE_DIFFUSION
+                return_tokens=USE_DIFFUSION,
+                chunk_len=chunk_len,      # <--- ADD THIS
+                overlap_len=overlap_len   # <--- ADD THIS
             )
         else:
-            outputs = MODEL.generate(texts, progress=progress, return_tokens=USE_DIFFUSION)
+            print("Generating without chroma...")
+            # Pass the arguments here too
+            outputs = MODEL.generate(
+                texts, 
+                progress=progress, 
+                return_tokens=USE_DIFFUSION,
+                chunk_len=chunk_len,      # <--- ADD THIS
+                overlap_len=overlap_len   # <--- ADD THIS
+            )
     except RuntimeError as e:
         raise gr.Error("Error while generating " + e.args[0])
 
