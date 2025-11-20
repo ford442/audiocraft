@@ -514,6 +514,7 @@ def ui_full(launch_kwargs):
                     chunk_len, overlap_len, enhance, mbd_steps],
             outputs=[output, audio_output, diffusion_output, audio_diffusion]
         )
+        decoder.change(toggle_diffusion, decoder, [diffusion_output, audio_diffusion, mbd_steps], queue=False)
         radio.change(toggle_audio_src, radio, [melody], queue=False, show_progress=False)
 
         gr.Examples(
