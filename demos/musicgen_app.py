@@ -77,11 +77,9 @@ sp.call = _call_nostderr  # Still a good idea to keep this
 pool = ProcessPoolExecutor(4)
 pool.__enter__()
 
-
 def interrupt():
     global INTERRUPTING
     INTERRUPTING = True
-
 
 class FileCleaner:
     def __init__(self, file_lifetime: float = 3600):
@@ -202,11 +200,19 @@ def _do_predictions(texts, melodies, duration, progress=False, gradio_progress=N
                 melody_wavs=processed_melodies,
                 melody_sample_rate=target_sr,
                 progress=progress,
-                return_tokens=True
+                return_tokens=True,
+                chunk_len=chunk_len,      # <--- ADD THIS
+                overlap_len=overlap_len   # <--- ADD THIS
             )
         else:
             print("Generating without chroma...")
-            outputs = MODEL.generate(texts, progress=progress, return_tokens=True)
+            outputs = MODEL.generate(
+                texts, 
+                progress=progress, 
+                return_tokens=True,
+                chunk_len=chunk_len,      # <--- ADD THIS
+                overlap_len=overlap_len   # <--- ADD THIS
+            )
 
         tokens = outputs[1]
 
@@ -486,7 +492,7 @@ def ui_full(launch_kwargs):
                     duration = gr.Slider(minimum=1, maximum=420, value=10, label="Duration", interactive=True)
                 with gr.Row():
                     chunk_len = gr.Slider(minimum=128, maximum=2048, value=1024, step=128, label="Chunk Length", interactive=True)
-                    overlap_len = gr.Slider(minimum=16, maximum=512, value=128, step=16, label="Overlap Length", interactive=True)
+                    overlap_len = gr.Slider(minimum=16, maximum=1024, value=128, step=16, label="Overlap Length", interactive=True)
 
                 with gr.Row():
                     topk = gr.Number(label="Top-k", value=250, interactive=True)

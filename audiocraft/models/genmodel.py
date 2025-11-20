@@ -148,8 +148,8 @@ class BaseGenModel(ABC):
             return self.generate_audio(tokens), tokens
         return self.generate_audio(tokens)
 
-    def generate(self, descriptions: tp.List[str], progress: bool = False, return_tokens: bool = False) \
-            -> tp.Union[torch.Tensor, tp.Tuple[torch.Tensor, torch.Tensor]]:
+    def generate(self, descriptions: tp.List[str], progress: bool = False, return_tokens: bool = False, **kwargs) \
+        -> tp.Union[torch.Tensor, tp.Tuple[torch.Tensor, torch.Tensor]]:
         """Generate samples conditioned on text.
 
         Args:
@@ -158,7 +158,7 @@ class BaseGenModel(ABC):
         """
         attributes, prompt_tokens = self._prepare_tokens_and_attributes(descriptions, None)
         assert prompt_tokens is None
-        tokens = self._generate_tokens(attributes, prompt_tokens, progress)
+        tokens = self._generate_tokens(attributes, prompt_tokens, progress, **kwargs)
         if return_tokens:
             return self.generate_audio(tokens), tokens
         return self.generate_audio(tokens)
