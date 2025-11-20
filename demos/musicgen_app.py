@@ -77,11 +77,9 @@ sp.call = _call_nostderr  # Still a good idea to keep this
 pool = ProcessPoolExecutor(4)
 pool.__enter__()
 
-
 def interrupt():
     global INTERRUPTING
     INTERRUPTING = True
-
 
 class FileCleaner:
     def __init__(self, file_lifetime: float = 3600):
@@ -491,7 +489,7 @@ def ui_full(launch_kwargs):
                     duration = gr.Slider(minimum=1, maximum=420, value=10, label="Duration", interactive=True)
                 with gr.Row():
                     chunk_len = gr.Slider(minimum=128, maximum=2048, value=1024, step=128, label="Chunk Length", interactive=True)
-                    overlap_len = gr.Slider(minimum=16, maximum=512, value=128, step=16, label="Overlap Length", interactive=True)
+                    overlap_len = gr.Slider(minimum=16, maximum=1024, value=128, step=16, label="Overlap Length", interactive=True)
 
                 with gr.Row():
                     topk = gr.Number(label="Top-k", value=250, interactive=True)
