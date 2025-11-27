@@ -251,15 +251,7 @@ class MusicGen(BaseGenModel):
     def _generate_tokens(self, attributes: tp.List[ConditioningAttributes],
                          prompt_tokens: tp.Optional[torch.Tensor], progress: bool = False,
                          chunk_len: int = 1024, overlap_len: int = 128) -> torch.Tensor:
-        """Generate discrete audio tokens...
-
-        Args:
-            attributes (list of ConditioningAttributes): Conditions used for generation (text/melody).
-            prompt_tokens (torch.Tensor, optional): Audio prompt used for continuation.
-            progress (bool, optional): Flag to display progress of the generation process. Defaults to False.
-        Returns:
-            torch.Tensor: Generated audio, of shape [B, C, T], T is defined by the generation params.
-        """
+        """Generate discrete audio tokens..."""
         total_gen_len = int(self.duration * self.frame_rate)
         max_prompt_len = int(min(self.duration, self.max_duration) * self.frame_rate)
         current_gen_offset: int = 0
@@ -267,8 +259,6 @@ class MusicGen(BaseGenModel):
         def _progress_callback(generated_tokens: int, tokens_to_generate: int):
             generated_tokens += current_gen_offset
             if self._progress_callback is not None:
-                # Note that total_gen_len might be quite wrong depending on the
-                # codebook pattern used, but with delay it is almost accurate.
                 self._progress_callback(generated_tokens, tokens_to_generate)
             else:
                 print(f'{generated_tokens: 6d} / {tokens_to_generate: 6d}', end='\r')
@@ -284,10 +274,12 @@ class MusicGen(BaseGenModel):
         if self.duration <= self.max_duration:
             # generate by sampling from LM, simple case.
             with self.autocast:
+                # FIX: Use the variables chunk_len and overlap_len instead of 1024/128
                 gen_tokens = self.lm.generate_in_chunks(
                         prompt_tokens, attributes,
-                        callback=callback, max_gen_len=total_gen_len, chunk_len=1024,
-                        overlap_len=128, **self.generation_params)
+                        callback=callback, max_gen_len=total_gen_len, 
+                        chunk_len=chunk_len, overlap_len=overlap_len, 
+                        **self.generation_params)
 
         else:
             # now this gets a bit messier, we need to handle prompts,
