@@ -491,8 +491,8 @@ def ui_full(launch_kwargs):
                 with gr.Row():
                     duration = gr.Slider(minimum=1, maximum=420, value=10, label="Duration", interactive=True)
                 with gr.Row():
-                    chunk_len = gr.Slider(minimum=128, maximum=2048, value=1024, step=128, label="Chunk Length", interactive=True)
-                    overlap_len = gr.Slider(minimum=16, maximum=1024, value=128, step=16, label="Overlap Length", interactive=True)
+                    chunk_len = gr.Slider(minimum=128, maximum=2048, value=544, step=128, label="Chunk Length", interactive=True)
+                    overlap_len = gr.Slider(minimum=16, maximum=1024, value=96, step=16, label="Overlap Length", interactive=True)
 
                 with gr.Row():
                     topk = gr.Number(label="Top-k", value=250, interactive=True)
