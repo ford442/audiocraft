@@ -250,7 +250,7 @@ class MusicGen(BaseGenModel):
 
     def _generate_tokens(self, attributes: tp.List[ConditioningAttributes],
                          prompt_tokens: tp.Optional[torch.Tensor], progress: bool = False,
-                         chunk_len: int = 1024, overlap_len: int = 128) -> torch.Tensor:
+                         chunk_len: int = 544, overlap_len: int = 96) -> torch.Tensor:
         """Generate discrete audio tokens..."""
         total_gen_len = int(self.duration * self.frame_rate)
         max_prompt_len = int(min(self.duration, self.max_duration) * self.frame_rate)
