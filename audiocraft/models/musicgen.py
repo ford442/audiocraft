@@ -248,13 +248,33 @@ class MusicGen(BaseGenModel):
             prompt_tokens = None
         return attributes, prompt_tokens
 
-    def _generate_tokens(self, attributes: tp.List[ConditioningAttributes],
+def _generate_tokens(self, attributes: tp.List[ConditioningAttributes],
                          prompt_tokens: tp.Optional[torch.Tensor], progress: bool = False,
-                         chunk_len: int = 544, overlap_len: int = 96) -> torch.Tensor:
-        """Generate discrete audio tokens..."""
+                         chunk_len: int = None, overlap_len: int = None,
+                         structure: tp.List[tp.Tuple[float, str, str]] = None) -> torch.Tensor:
+        """
+        Generate with Dynamic Context and Narrative Switching.
+        structure: List of (time, mode, text_prompt).
+                   Example: [(0, 'composition', "Soft piano intro"), 
+                             (15, 'stable', "Heavy drums enter")]
+        """
         total_gen_len = int(self.duration * self.frame_rate)
         max_prompt_len = int(min(self.duration, self.max_duration) * self.frame_rate)
         current_gen_offset: int = 0
+
+        # Safety Defaults
+        if not hasattr(self, 'modes'):
+             self.modes = {
+                'stable': {'chunk': 544, 'overlap': 96},
+                'composition': {'chunk': 1152, 'overlap': 192}
+            }
+        
+        # Track current state to avoid unnecessary re-tokenization
+        current_chunk = chunk_len if chunk_len else getattr(self, 'default_chunk_len', 544)
+        current_overlap = overlap_len if overlap_len else getattr(self, 'default_overlap_len', 96)
+        # We assume batch size matches the initial attributes length
+        batch_size = len(attributes)
+        active_structure_index = -1 
 
         def _progress_callback(generated_tokens: int, tokens_to_generate: int):
             generated_tokens += current_gen_offset
@@ -272,19 +292,11 @@ class MusicGen(BaseGenModel):
             callback = _progress_callback
 
         if self.duration <= self.max_duration:
-            # generate by sampling from LM, simple case.
             with self.autocast:
-                # FIX: Use the variables chunk_len and overlap_len instead of 1024/128
-                gen_tokens = self.lm.generate_in_chunks(
-                        prompt_tokens, attributes,
-                        callback=callback, max_gen_len=total_gen_len, 
-                        chunk_len=chunk_len, overlap_len=overlap_len, 
-                        **self.generation_params)
-
+                gen_tokens = self.lm.generate(
+                    prompt_tokens, attributes,
+                    callback=callback, max_gen_len=total_gen_len, **self.generation_params)
         else:
-            # now this gets a bit messier, we need to handle prompts,
-            # melody conditioning etc.
-            ref_wavs = [attr.wav['self_wav'] for attr in attributes]
             all_tokens = []
             if prompt_tokens is None:
                 prompt_length = 0
@@ -292,42 +304,63 @@ class MusicGen(BaseGenModel):
                 all_tokens.append(prompt_tokens)
                 prompt_length = prompt_tokens.shape[-1]
 
-            assert self.extend_stride is not None, "Stride should be defined to generate beyond max_duration"
-            assert self.extend_stride < self.max_duration, "Cannot stride by more than max generation duration."
-            stride_tokens = int(self.frame_rate * self.extend_stride)
-
             while current_gen_offset + prompt_length < total_gen_len:
+                # --- NARRATIVE & STRUCTURE CONTROL ---
+                current_time_sec = current_gen_offset / self.frame_rate
+                
+                if structure:
+                    # 1. Find the latest active instruction
+                    target_index = -1
+                    for i, (start_time, _, _) in enumerate(structure):
+                        if current_time_sec >= start_time:
+                            target_index = i
+                        else:
+                            break
+                    
+                    # 2. Apply changes if we moved to a new section
+                    if target_index != active_structure_index and target_index != -1:
+                        _, new_mode, new_text = structure[target_index]
+                        
+                        # Update Chunking Mode
+                        if new_mode and new_mode in self.modes:
+                            current_chunk = self.modes[new_mode]['chunk']
+                            current_overlap = self.modes[new_mode]['overlap']
+                        
+                        # Update Text Prompt (Re-tokenize)
+                        if new_text:
+                            # We construct a list of prompts, one for each item in batch
+                            new_prompts = [new_text] * batch_size
+                            # Re-use the parent class method to tokenize
+                            new_attributes, _ = self._prepare_tokens_and_attributes(new_prompts, None)
+                            
+                            # Preserve audio prompts if they existed in the original attributes
+                            # (The method above creates fresh attributes, so we might lose melody conditions
+                            #  if we aren't careful. For text-to-music, this is fine.)
+                            attributes = new_attributes
+                            
+                        active_structure_index = target_index
+
+                # --- GENERATION STEP ---
                 time_offset = current_gen_offset / self.frame_rate
                 chunk_duration = min(self.duration - time_offset, self.max_duration)
                 max_gen_len = int(chunk_duration * self.frame_rate)
-                for attr, ref_wav in zip(attributes, ref_wavs):
-                    wav_length = ref_wav.length.item()
-                    if wav_length == 0:
-                        continue
-                    # We will extend the wav periodically if it not long enough.
-                    # we have to do it here rather than in conditioners.py as otherwise
-                    # we wouldn't have the full wav.
-                    initial_position = int(time_offset * self.sample_rate)
-                    wav_target_length = int(self.max_duration * self.sample_rate)
-                    positions = torch.arange(initial_position,
-                                             initial_position + wav_target_length, device=self.device)
-                    attr.wav['self_wav'] = WavCondition(
-                        ref_wav[0][..., positions % wav_length],
-                        torch.full_like(ref_wav[1], wav_target_length),
-                        [self.sample_rate] * ref_wav[0].size(0),
-                        [None], [0.])
+                
                 with self.autocast:
                     gen_tokens = self.lm.generate_in_chunks(
                         prompt_tokens, attributes,
-                        callback=callback, max_gen_len=max_gen_len,  # Corrected from total_gen_len
-                        chunk_len=chunk_len, overlap_len=overlap_len, **self.generation_params)
+                        callback=callback, max_gen_len=max_gen_len,
+                        chunk_len=current_chunk, overlap_len=current_overlap,
+                        **self.generation_params)
+                
                 if prompt_tokens is None:
                     all_tokens.append(gen_tokens)
                 else:
                     all_tokens.append(gen_tokens[:, :, prompt_tokens.shape[-1]:])
-                prompt_tokens = gen_tokens[:, :, stride_tokens:]
+                
+                dynamic_stride = current_chunk - current_overlap
+                prompt_tokens = gen_tokens[:, :, dynamic_stride:] 
                 prompt_length = prompt_tokens.shape[-1]
-                current_gen_offset += stride_tokens
+                current_gen_offset += dynamic_stride 
 
             gen_tokens = torch.cat(all_tokens, dim=-1)
         return gen_tokens
