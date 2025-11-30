@@ -433,6 +433,7 @@ class LMModel(StreamingModule):
                  remove_prompts: bool = False,
                  check: bool = False,
                  callback: tp.Optional[tp.Callable[[int, int], None]] = None,
+                 cfg_conditions: tp.Optional[CFGConditions] = None,
                  ) -> torch.Tensor:
         """Generate tokens sampling from the model given a prompt or unconditionally. Generation can
         be performed in a greedy fashion or using sampling with top K and top P strategies.
@@ -456,6 +457,8 @@ class LMModel(StreamingModule):
             remove_prompts (bool): Whether to remove prompts from generation or not.
             check (bool): Whether to apply further checks on generated sequence.
             callback (Callback, optional): Callback function to report generation progress.
+            cfg_conditions (dict or tuple, optional): Pre-computed classifier free guidance conditions.
+                If provided, `conditions` will be ignored for computing `cfg_conditions`.
         Returns:
             torch.Tensor: Generated tokens.
         """
@@ -485,30 +488,28 @@ class LMModel(StreamingModule):
         # We also support doing two different passes, in particular to ensure that
         # the padding structure is exactly the same between train and test.
         # With a batch size of 1, this can be slower though.
-        cfg_conditions: CFGConditions
-        cfg_conditions = {}
-        if cfg_coef_beta is not None:
-            if conditions:
-                wav_conditions = _drop_description_condition(conditions)
-                null_conditions = ClassifierFreeGuidanceDropout(p=1.0)(conditions)
-                conditions = conditions + wav_conditions + null_conditions
-                tokenized = self.condition_provider.tokenize(conditions)
-                cfg_conditions = self.condition_provider(tokenized)
-        elif conditions:
-            two_step_cfg = self.two_step_cfg if two_step_cfg is None else two_step_cfg
-            if conditions:
-                null_conditions = ClassifierFreeGuidanceDropout(p=1.0)(conditions)
-                if two_step_cfg:
-                    cfg_conditions = (
-                        self.condition_provider(self.condition_provider.tokenize(conditions)),
-                        self.condition_provider(self.condition_provider.tokenize(null_conditions)),
-                    )
-                else:
-                    conditions = conditions + null_conditions
+        if cfg_conditions is None:
+            cfg_conditions = {}
+            if cfg_coef_beta is not None:
+                if conditions:
+                    wav_conditions = _drop_description_condition(conditions)
+                    null_conditions = ClassifierFreeGuidanceDropout(p=1.0)(conditions)
+                    conditions = conditions + wav_conditions + null_conditions
                     tokenized = self.condition_provider.tokenize(conditions)
                     cfg_conditions = self.condition_provider(tokenized)
-        else:
-            cfg_conditions = {}
+            elif conditions:
+                two_step_cfg = self.two_step_cfg if two_step_cfg is None else two_step_cfg
+                if conditions:
+                    null_conditions = ClassifierFreeGuidanceDropout(p=1.0)(conditions)
+                    if two_step_cfg:
+                        cfg_conditions = (
+                            self.condition_provider(self.condition_provider.tokenize(conditions)),
+                            self.condition_provider(self.condition_provider.tokenize(null_conditions)),
+                        )
+                    else:
+                        conditions = conditions + null_conditions
+                        tokenized = self.condition_provider.tokenize(conditions)
+                        cfg_conditions = self.condition_provider(tokenized)
 
         if prompt is None:
             assert num_samples > 0
@@ -631,6 +632,38 @@ class LMModel(StreamingModule):
             assert num_samples > 0
             prompt = torch.zeros((num_samples, self.num_codebooks, 0), dtype=torch.long, device=device)
 
+        # Pre-compute conditions if possible to avoid re-computation in every chunk
+        cfg_conditions = None
+        # Extract necessary params for condition computation
+        cfg_coef_beta = filtered_kwargs.get('cfg_coef_beta')
+        two_step_cfg = filtered_kwargs.get('two_step_cfg', self.two_step_cfg)
+
+        # Copied logic from generate to pre-compute conditions
+        if cfg_coef_beta is not None:
+            if conditions:
+                wav_conditions = _drop_description_condition(conditions)
+                null_conditions = ClassifierFreeGuidanceDropout(p=1.0)(conditions)
+                # Note: modifying conditions list here is safe as we pass cfg_conditions
+                conditions_list = conditions + wav_conditions + null_conditions
+                tokenized = self.condition_provider.tokenize(conditions_list)
+                cfg_conditions = self.condition_provider(tokenized)
+            else:
+                cfg_conditions = {}
+        elif conditions:
+            if conditions:
+                null_conditions = ClassifierFreeGuidanceDropout(p=1.0)(conditions)
+                if two_step_cfg:
+                    cfg_conditions = (
+                        self.condition_provider(self.condition_provider.tokenize(conditions)),
+                        self.condition_provider(self.condition_provider.tokenize(null_conditions)),
+                    )
+                else:
+                    conditions_list = conditions + null_conditions
+                    tokenized = self.condition_provider.tokenize(conditions_list)
+                    cfg_conditions = self.condition_provider(tokenized)
+        else:
+            cfg_conditions = {}
+
         B, K, T = prompt.shape
         all_generated_codes = []
 
@@ -648,13 +681,14 @@ class LMModel(StreamingModule):
 
                 effective_max_gen_len = current_prompt.shape[-1] + len_to_generate
 
-                # Call the original generate function with the filtered kwargs
+                # Call the original generate function with the filtered kwargs and pre-computed conditions
                 generated_chunk = self.generate(
                     prompt=current_prompt,
-                    conditions=conditions,
+                    conditions=conditions, # passed for consistency checks but cfg_conditions takes precedence
                     num_samples=num_samples,
                     max_gen_len=effective_max_gen_len,
                     remove_prompts=True,
+                    cfg_conditions=cfg_conditions,
                     **filtered_kwargs
                 )
 
@@ -664,7 +698,6 @@ class LMModel(StreamingModule):
                 print(f"Generated chunk of size {generated_chunk.shape[-1]}. Total generated: {total_generated_len}/{max_gen_len}")
 
                 current_prompt = generated_chunk[..., -overlap_len:]
-                # The incorrect line 'conditions = []' has been removed from here.
 
         if not all_generated_codes:
             return torch.zeros((B, K, 0), dtype=torch.long, device=device)
